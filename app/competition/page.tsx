@@ -197,6 +197,41 @@ function formatDecisionFeedLine(
   return `${agent} → ${action} @ ${formatUsdInt(price)} · ${rel}`;
 }
 
+/** Demo feed lines when /state has no recentDecisions yet. */
+function buildSimulatedFeedRows(fallbackPrice: number) {
+  const now = Date.now();
+  const steps: { agent: AgentKey; action: string; msAgo: number; skew: number }[] =
+    [
+      { agent: "grok", action: "SELL", msAgo: 58_000, skew: -0.00008 },
+      { agent: "gemini", action: "HOLD", msAgo: 57_000, skew: 0 },
+      { agent: "claude", action: "HOLD", msAgo: 56_000, skew: 0 },
+      { agent: "chatgpt", action: "BUY", msAgo: 55_000, skew: 0.00006 },
+      { agent: "chatgpt", action: "BUY", msAgo: 118_000, skew: 0.00012 },
+      { agent: "claude", action: "HOLD", msAgo: 119_000, skew: 0.00012 },
+      { agent: "gemini", action: "HOLD", msAgo: 180_000, skew: -0.00004 },
+      { agent: "grok", action: "BUY", msAgo: 245_000, skew: 0.0001 },
+    ];
+  return steps.map((s, i) => {
+    const p = Math.round(fallbackPrice * (1 + s.skew) * 100) / 100;
+    const row = {
+      agent: s.agent,
+      action: s.action,
+      price: String(p),
+      time: new Date(now - s.msAgo).toISOString(),
+    };
+    const text =
+      formatDecisionFeedLine(row, fallbackPrice) ??
+      `${agentNameFromDecision(row as Record<string, unknown>)} → ${s.action} @ ${formatUsdInt(p)} · demo`;
+    return { key: `sim-${i}`, text };
+  });
+}
+
+function formatStreakLabel(api: AgentApiState): string {
+  if (api.streak <= 0) return "—";
+  const d = String(api.streakDir).toUpperCase();
+  return d === "L" ? `${api.streak}L` : `${api.streak}W`;
+}
+
 export default function CompetitionPage() {
   const router = useRouter();
   const { data } = useCompetitionState();
@@ -659,20 +694,62 @@ function OutcomesPanel({ data }: { data: CompetitionApiResponse }) {
   return (
     <div className="space-y-3">
       <h3 className="text-sm font-semibold text-zinc-200">Round outcomes</h3>
-      <ul className="space-y-2 text-xs text-zinc-400">
-        {AGENTS.map(({ id, name }) => {
+      <ul className="space-y-3 text-xs text-zinc-400">
+        {AGENTS.map(({ id, name, color }) => {
           const a = data.agents[id];
+          const awaitingEval = a.wins === 0 && a.total === 0;
           const wr =
             a.total > 0 ? Math.round((a.wins / a.total) * 100) : 0;
+          const last = String(a.lastAction || "HOLD").toUpperCase();
           return (
             <li
               key={id}
-              className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+              className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-3"
             >
-              <span className="font-medium text-zinc-200">{name}</span>
-              <span className="tabular-nums text-zinc-500">
-                {a.wins}W / {a.total - a.wins}L · {wr}% win rate
-              </span>
+              <div className="flex items-center gap-2">
+                <span
+                  className="text-sm font-semibold text-zinc-100"
+                  style={{ color }}
+                >
+                  {name}
+                </span>
+              </div>
+              {awaitingEval ? (
+                <p className="mt-2 text-[11px] leading-relaxed text-zinc-500">
+                  Awaiting first evaluated trade
+                </p>
+              ) : (
+                <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] sm:grid-cols-4">
+                  <div>
+                    <p className="text-zinc-600">Total trades</p>
+                    <p className="font-medium tabular-nums text-zinc-200">
+                      {a.total}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-zinc-600">Win rate</p>
+                    <p className="font-medium tabular-nums text-zinc-200">
+                      {wr}%
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-zinc-600">Streak</p>
+                    <p className="font-medium tabular-nums text-zinc-200">
+                      {formatStreakLabel(a)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-zinc-600">Last action</p>
+                    <p className="font-medium text-zinc-200">{last}</p>
+                  </div>
+                </div>
+              )}
+              {awaitingEval && (
+                <p className="mt-2 text-[11px] text-zinc-600">
+                  Last signal:{" "}
+                  <span className="font-medium text-zinc-400">{last}</span>
+                </p>
+              )}
             </li>
           );
         })}
@@ -682,30 +759,33 @@ function OutcomesPanel({ data }: { data: CompetitionApiResponse }) {
 }
 
 function FeedPanel({ data }: { data: CompetitionApiResponse }) {
-  const items = Array.isArray(data.recentDecisions)
+  const apiItems = Array.isArray(data.recentDecisions)
     ? data.recentDecisions
     : [];
   const fallbackPrice = data.price;
 
-  const rows = items.slice(0, 24).map((row, i) => {
-    const line = formatDecisionFeedLine(row, fallbackPrice);
-    if (line)
-      return { key: `f-${i}`, text: line, mono: false as const };
-    const fallback =
-      typeof row === "object" && row !== null
-        ? JSON.stringify(row)
-        : String(row);
-    return { key: `j-${i}`, text: fallback, mono: true as const };
-  });
-
-  if (items.length === 0) {
-    return (
-      <div className="space-y-2 text-xs text-zinc-500">
-        <h3 className="text-sm font-semibold text-zinc-200">Live feed</h3>
-        <p>No recent decisions in the wire yet. Stay on channel.</p>
-      </div>
-    );
-  }
+  const rows = useMemo(() => {
+    if (apiItems.length > 0) {
+      return apiItems.slice(0, 24).map((row, i) => {
+        const line = formatDecisionFeedLine(row, fallbackPrice);
+        if (line)
+          return { key: `api-${i}`, text: line, mono: false as const };
+        const fallback =
+          typeof row === "object" && row !== null
+            ? JSON.stringify(row)
+            : String(row);
+        return {
+          key: `api-raw-${i}`,
+          text: fallback,
+          mono: true as const,
+        };
+      });
+    }
+    return buildSimulatedFeedRows(fallbackPrice).map((r) => ({
+      ...r,
+      mono: false as const,
+    }));
+  }, [apiItems, fallbackPrice]);
 
   return (
     <div className="space-y-2">
