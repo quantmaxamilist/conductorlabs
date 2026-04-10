@@ -27,6 +27,7 @@ type PolymarketMarketRow = {
   question: string;
   yesOdds: number;
   predictions: Partial<Record<AgentKey, string>>;
+  endsAt: string | null;
 };
 
 type CrowdTally = { yes: number; no: number };
@@ -57,6 +58,8 @@ function parseMarkets(json: unknown): {
         typeof m.yesOdds === "number" && Number.isFinite(m.yesOdds)
           ? Math.min(100, Math.max(0, m.yesOdds))
           : 50;
+      const endsAt =
+        typeof m.endsAt === "string" && m.endsAt.length > 0 ? m.endsAt : null;
       const predsRaw = m.predictions;
       const predictions: Partial<Record<AgentKey, string>> = {};
       if (predsRaw && typeof predsRaw === "object" && predsRaw !== null) {
@@ -76,6 +79,7 @@ function parseMarkets(json: unknown): {
         question,
         yesOdds,
         predictions,
+        endsAt,
       });
     }
   }
@@ -95,6 +99,40 @@ function agentBadgeGlow(pred: string): string {
   if (p === "NO")
     return "bg-red-500/15 text-red-200 ring-2 ring-red-400/45 shadow-[0_0_20px_rgba(239,68,68,0.4)]";
   return "bg-zinc-700/90 text-zinc-300 ring-2 ring-zinc-500/40 shadow-[0_0_14px_rgba(113,113,122,0.35)]";
+}
+
+function formatMarketCloseLabel(
+  endsAt: string | null,
+  now: number,
+): { text: string; className: string } | null {
+  if (!endsAt) return null;
+  const end = new Date(endsAt).getTime();
+  if (!Number.isFinite(end)) return null;
+  const msLeft = end - now;
+  if (msLeft <= 0) {
+    return { text: "Closed", className: "text-zinc-500" };
+  }
+  const hourMs = 60 * 60 * 1000;
+  const dayMs = 24 * hourMs;
+  if (msLeft < hourMs) {
+    const mins = Math.max(1, Math.ceil(msLeft / (60 * 1000)));
+    return {
+      text: `Closes in ${mins} ${mins === 1 ? "min" : "mins"}`,
+      className: "text-red-400",
+    };
+  }
+  if (msLeft < dayMs) {
+    const hours = Math.max(1, Math.ceil(msLeft / hourMs));
+    return {
+      text: `Closes in ${hours} ${hours === 1 ? "hour" : "hours"}`,
+      className: "text-amber-400",
+    };
+  }
+  const label = new Date(end).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+  return { text: `Closes ${label}`, className: "text-zinc-500" };
 }
 
 function initialCrowdFromOdds(yesOdds: number): CrowdTally {
@@ -237,6 +275,7 @@ export default function PredictionsPage() {
             const tally = crowd[m.id] ?? initialCrowdFromOdds(m.yesOdds);
             const total = tally.yes + tally.no;
             const crowdYesPct = total > 0 ? Math.round((tally.yes / total) * 100) : 50;
+            const closeLabel = formatMarketCloseLabel(m.endsAt, Date.now());
 
             return (
               <article
@@ -248,9 +287,18 @@ export default function PredictionsPage() {
                 </h2>
 
                 <div className="mt-6">
-                  <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-                    YES odds
-                  </p>
+                  <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
+                    <p className="text-[11px] font-medium uppercase tracking-wider text-zinc-500">
+                      YES odds
+                    </p>
+                    {closeLabel && (
+                      <p
+                        className={`shrink-0 text-right text-[11px] font-medium sm:text-xs ${closeLabel.className}`}
+                      >
+                        {closeLabel.text}
+                      </p>
+                    )}
+                  </div>
                   <p className="mt-1 text-4xl font-bold tabular-nums text-emerald-400 sm:text-5xl">
                     {m.yesOdds}
                     <span className="text-2xl font-semibold text-zinc-500 sm:text-3xl">
