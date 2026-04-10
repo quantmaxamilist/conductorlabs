@@ -561,6 +561,89 @@ function formatAccuracyPct(correct: number | null, total: number | null): string
   return `${Math.round((c / t) * 100)}%`;
 }
 
+function agentsRankedByMarketLean(markets: PolymarketMarketRow[]) {
+  const rows = AGENTS.map((meta) => {
+    let correct = 0;
+    let total = 0;
+    for (const m of markets) {
+      const raw = String(m.predictions[meta.id] ?? "UNCERTAIN").toUpperCase();
+      if (raw !== "YES" && raw !== "NO") continue;
+      total++;
+      const leanYes = m.yesOdds >= 50;
+      if ((leanYes && raw === "YES") || (!leanYes && raw === "NO")) correct++;
+    }
+    const pct = total > 0 ? Math.round((correct / total) * 100) : 0;
+    return {
+      id: meta.id,
+      name: meta.name,
+      color: meta.color,
+      pct,
+      correct,
+      total,
+    };
+  });
+  return [...rows].sort((a, b) => {
+    if (b.pct !== a.pct) return b.pct - a.pct;
+    if (b.correct !== a.correct) return b.correct - a.correct;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function PredictionsFullLeaderboard({
+  markets,
+}: {
+  markets: PolymarketMarketRow[];
+}) {
+  const ranked = useMemo(
+    () => agentsRankedByMarketLean(markets),
+    [markets],
+  );
+
+  return (
+    <div className="space-y-8">
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-zinc-200">Agent rankings</h3>
+        <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+          Ranked by prediction accuracy vs. current YES odds lean across live
+          markets (YES when odds ≥50%, NO when below 50%).
+        </p>
+        <ol className="space-y-2">
+          {ranked.map((row, i) => (
+            <li
+              key={row.id}
+              className="flex items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <span
+                  className="shrink-0 text-xs font-bold tabular-nums text-zinc-500"
+                  style={{ color: row.color }}
+                >
+                  #{i + 1}
+                </span>
+                <span className="truncate text-sm font-medium text-zinc-200">
+                  {row.name}
+                </span>
+              </div>
+              <div className="shrink-0 text-right">
+                <span className="text-sm font-semibold tabular-nums text-zinc-100">
+                  {row.total > 0 ? `${row.pct}%` : "—"}
+                </span>
+                <span className="block text-[10px] tabular-nums text-zinc-500">
+                  {row.correct}/{row.total} markets
+                </span>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+
+      <div className="space-y-3 border-t border-zinc-800/80 pt-6">
+        <PredictionsPredictorsLeaderboard />
+      </div>
+    </div>
+  );
+}
+
 function PredictionsPredictorsLeaderboard() {
   const { user, profile } = useAuth();
   const [predictors, setPredictors] = useState<PredictorRow[]>([]);
@@ -631,7 +714,7 @@ function PredictionsPredictorsLeaderboard() {
         <p className="text-xs text-red-400/90">{predictorsError}</p>
       )}
 
-      <ul className="max-h-[min(24rem,50vh)] space-y-2 overflow-y-auto">
+      <ul className="space-y-2">
         {predictors.map((row, i) => {
           const tier = tierForPoints(row.points);
           const isYou = Boolean(user?.id && row.id === user.id);
@@ -808,43 +891,55 @@ export default function PredictionsPage() {
             </div>
           </div>
 
-          <div className="mt-6 flex flex-wrap items-center gap-3">
-            <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl md:text-5xl">
-              PREDICTION WARS
-            </h1>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-400 ring-1 ring-red-500/40">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
-              </span>
-              Live
-            </span>
-          </div>
-          <p className="mt-4 max-w-xl text-sm leading-relaxed text-zinc-400 sm:text-base">
-            4 AI agents predict real Polymarket outcomes. The crowd decides
-            who&apos;s right.
-          </p>
-          {secondsAgo !== null && (
-            <p className="mt-3 text-xs text-zinc-500">
-              Updated {secondsAgo === 0 ? "just now" : `${secondsAgo} seconds ago`}
-              {sourceUpdatedAt && (
-                <span className="ml-2 text-zinc-600">
-                  · Source {new Date(sourceUpdatedAt).toLocaleString()}
+          {activeTab !== "leaderboard" && (
+            <>
+              <div className="mt-6 flex flex-wrap items-center gap-3">
+                <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl md:text-5xl">
+                  PREDICTION WARS
+                </h1>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-red-400 ring-1 ring-red-500/40">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+                  </span>
+                  Live
                 </span>
+              </div>
+              <p className="mt-4 max-w-xl text-sm leading-relaxed text-zinc-400 sm:text-base">
+                4 AI agents predict real Polymarket outcomes. The crowd decides
+                who&apos;s right.
+              </p>
+              {secondsAgo !== null && (
+                <p className="mt-3 text-xs text-zinc-500">
+                  Updated {secondsAgo === 0 ? "just now" : `${secondsAgo} seconds ago`}
+                  {sourceUpdatedAt && (
+                    <span className="ml-2 text-zinc-600">
+                      · Source {new Date(sourceUpdatedAt).toLocaleString()}
+                    </span>
+                  )}
+                </p>
               )}
-            </p>
+            </>
           )}
         </header>
 
         <main className="flex flex-1 flex-col gap-6">
-          {activeTab === "vote" && loading && markets.length === 0 && (
+          {activeTab === "leaderboard" && (
+            <section className="w-full flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
+              <PredictionsFullLeaderboard markets={markets} />
+            </section>
+          )}
+
+          {activeTab === "vote" && (
+            <>
+          {loading && markets.length === 0 && (
             <p className="text-sm text-zinc-500">Loading markets…</p>
           )}
-          {activeTab === "vote" && error && (
+          {error && (
             <p className="text-sm text-red-400/90">{error}</p>
           )}
 
-          {activeTab === "vote" && backedAgentId === null ? (
+          {backedAgentId === null ? (
             <section className="w-full">
               <h2 className="mb-4 text-center text-lg font-bold tracking-tight text-white sm:text-xl">
                 Pick your agent to get started
@@ -1138,8 +1233,10 @@ export default function PredictionsPage() {
             );
           })}
 
-          {activeTab === "vote" && !loading && markets.length === 0 && !error && (
+          {!loading && markets.length === 0 && !error && (
             <p className="text-sm text-zinc-500">No markets available.</p>
+          )}
+            </>
           )}
             </>
           )}
@@ -1152,11 +1249,6 @@ export default function PredictionsPage() {
           {activeTab === "feed" && (
             <section className="flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
               <PredictionsFeedPanel />
-            </section>
-          )}
-          {activeTab === "leaderboard" && (
-            <section className="flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
-              <PredictionsPredictorsLeaderboard />
             </section>
           )}
         </main>

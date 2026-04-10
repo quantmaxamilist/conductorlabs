@@ -521,6 +521,14 @@ export default function CompetitionPage() {
         </div>
       </header>
 
+      {activeTab === "leaderboard" && (
+        <section className="mb-4 flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
+          <LeaderboardPanel sortedAgents={sortedAgents} />
+        </section>
+      )}
+
+      {activeTab !== "leaderboard" && (
+        <>
       {/* Round timer */}
       <section
         className={`mb-5 rounded-xl border border-zinc-800 bg-[#111] p-3 transition-shadow ${roundPulse ? "shadow-[0_0_0_2px_rgba(250,204,21,0.35)]" : ""}`}
@@ -757,7 +765,11 @@ export default function CompetitionPage() {
         </>
       )}
 
+        </>
+      )}
+
       {/* Rank toasts */}
+      {activeTab !== "leaderboard" && (
       <div className="pointer-events-none fixed bottom-24 left-3 z-50 flex max-w-[min(100%,20rem)] flex-col gap-2 sm:left-6">
         {toasts.map((t) => (
           <button
@@ -775,6 +787,7 @@ export default function CompetitionPage() {
           </button>
         ))}
       </div>
+      )}
 
       {/* Bottom tabs + panels */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-800 bg-[#0d0d0d]/95 backdrop-blur-md">
@@ -824,14 +837,13 @@ export default function CompetitionPage() {
       </nav>
 
       {/* Tab content (scrolls above fixed nav) */}
+      {activeTab !== "leaderboard" && (
       <section className="mt-6 flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
         {activeTab === "vote" && <VotePanel btc5mPct={btc5mPct} />}
         {activeTab === "outcomes" && <OutcomesPanel data={data} />}
         {activeTab === "feed" && <FeedPanel data={data} />}
-        {activeTab === "leaderboard" && (
-          <LeaderboardPanel sortedAgents={sortedAgents} />
-        )}
       </section>
+      )}
     </div>
   );
 }
