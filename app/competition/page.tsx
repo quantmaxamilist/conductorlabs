@@ -61,8 +61,8 @@ const STARTING_POOL_GBP: Record<AgentKey, number> = {
   grok: 116_900,
 };
 
-/** Round / decision countdown length (seconds). */
-const TOTAL_ROUND_SECONDS = 300;
+/** Round / decision countdown length (5 minutes). */
+const TOTAL_SECONDS = 300;
 
 function formatCountdownMSS(sec: number): string {
   const m = Math.floor(sec / 60);
@@ -313,7 +313,7 @@ export default function CompetitionPage() {
   const router = useRouter();
   const { data } = useCompetitionState();
   const [watchers, setWatchers] = useState(18420);
-  const [secondsLeft, setSecondsLeft] = useState(TOTAL_ROUND_SECONDS);
+  const [secondsLeft, setSecondsLeft] = useState(TOTAL_SECONDS);
   const [roundPulse, setRoundPulse] = useState(false);
   const [guideSignalFlash, setGuideSignalFlash] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("vote");
@@ -360,7 +360,7 @@ export default function CompetitionPage() {
 
   useEffect(() => {
     const prev = prevSecondsRef.current;
-    if (prev === 1 && secondsLeft === TOTAL_ROUND_SECONDS) {
+    if (prev === 1 && secondsLeft === TOTAL_SECONDS) {
       setGuideSignalFlash(true);
       window.setTimeout(() => setGuideSignalFlash(false), 2500);
     }
@@ -380,7 +380,7 @@ export default function CompetitionPage() {
         if (s <= 1) {
           setRoundPulse(true);
           window.setTimeout(() => setRoundPulse(false), 600);
-          return TOTAL_ROUND_SECONDS;
+          return TOTAL_SECONDS;
         }
         return s - 1;
       });
@@ -445,7 +445,7 @@ export default function CompetitionPage() {
     });
   }, [sortedAgents]);
 
-  const progress = (secondsLeft / TOTAL_ROUND_SECONDS) * 100;
+  const progress = (secondsLeft / TOTAL_SECONDS) * 100;
   const urgent = secondsLeft <= 10;
 
   const btc5mPct = useMemo(() => {
