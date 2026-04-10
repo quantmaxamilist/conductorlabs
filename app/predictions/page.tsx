@@ -30,7 +30,41 @@ type PolymarketMarketRow = {
   endsAt: string | null;
 };
 
-type CrowdTally = { yes: number; no: number };
+type Strategy = "backYes" | "backNo" | "hedge" | "skip";
+
+const STRATEGY_ORDER: Strategy[] = ["backYes", "hedge", "backNo", "skip"];
+
+const STRATEGY_META: Record<
+  Strategy,
+  { label: string; summary: string; barLabel: string }
+> = {
+  backYes: {
+    label: "Back YES — high confidence",
+    summary: "Back YES — high confidence",
+    barLabel: "Back YES",
+  },
+  backNo: {
+    label: "Back NO — fade the market",
+    summary: "Back NO — fade the market",
+    barLabel: "Back NO",
+  },
+  hedge: {
+    label: "Hedge — too close to call",
+    summary: "Hedge — too close to call",
+    barLabel: "Hedge",
+  },
+  skip: {
+    label: "Skip — find a better opportunity",
+    summary: "Skip — find a better opportunity",
+    barLabel: "Skip",
+  },
+};
+
+type CrowdStrategyTally = Record<Strategy, number>;
+
+function emptyTally(): CrowdStrategyTally {
+  return { backYes: 0, backNo: 0, hedge: 0, skip: 0 };
+}
 
 function normalizePolyPrediction(raw: unknown): string {
   if (typeof raw !== "string") return "UNCERTAIN";
@@ -67,8 +101,8 @@ function parseMarkets(json: unknown): {
         for (const a of AGENTS) {
           const raw = pr[a.id];
           if (raw && typeof raw === "object" && raw !== null) {
-            const o = raw as Record<string, unknown>;
-            predictions[a.id] = normalizePolyPrediction(o.prediction);
+            const o2 = raw as Record<string, unknown>;
+            predictions[a.id] = normalizePolyPrediction(o2.prediction);
           } else {
             predictions[a.id] = normalizePolyPrediction(raw);
           }
@@ -135,12 +169,109 @@ function formatMarketCloseLabel(
   return { text: `Closes ${label}`, className: "text-zinc-500" };
 }
 
-function initialCrowdFromOdds(yesOdds: number): CrowdTally {
-  const scale = 8 + Math.round(yesOdds / 10);
-  const yesW = Math.max(1, Math.round((yesOdds / 100) * scale * 10));
-  const noW = Math.max(1, Math.round(((100 - yesOdds) / 100) * scale * 10));
-  return { yes: yesW, no: noW };
+function initialCrowdFromOdds(yesOdds: number): CrowdStrategyTally {
+  const scale = 6 + Math.round(yesOdds / 12);
+  const y = Math.max(2, Math.round((yesOdds / 100) * scale * 8));
+  const n = Math.max(2, Math.round(((100 - yesOdds) / 100) * scale * 8));
+  const nearTossUp = 1 - Math.abs(yesOdds - 50) / 50;
+  const hedge = Math.max(2, Math.round(scale * 2 + nearTossUp * scale * 3));
+  const skip = Math.max(1, Math.round(scale * 1.5));
+  return { backYes: y, backNo: n, hedge, skip };
 }
+
+function tallyTotal(t: CrowdStrategyTally): number {
+  return t.backYes + t.backNo + t.hedge + t.skip;
+}
+
+function crowdPercents(t: CrowdStrategyTally): Record<Strategy, number> {
+  const tot = tallyTotal(t);
+  if (tot <= 0) {
+    return { backYes: 25, backNo: 25, hedge: 25, skip: 25 };
+  }
+  const p: Record<Strategy, number> = {
+    backYes: Math.round((t.backYes / tot) * 100),
+    backNo: Math.round((t.backNo / tot) * 100),
+    hedge: Math.round((t.hedge / tot) * 100),
+    skip: Math.round((t.skip / tot) * 100),
+  };
+  const sum = p.backYes + p.backNo + p.hedge + p.skip;
+  const diff = 100 - sum;
+  if (diff !== 0) {
+    const maxK = STRATEGY_ORDER.reduce((a, b) => (p[a] >= p[b] ? a : b));
+    p[maxK] += diff;
+  }
+  return p;
+}
+
+function predToScore(pred: string): number {
+  const u = pred.toUpperCase();
+  if (u === "YES") return 1;
+  if (u === "NO") return -1;
+  return 0;
+}
+
+function scoreToPred(s: number): string {
+  if (s > 0.42) return "YES";
+  if (s < -0.42) return "NO";
+  return "UNCERTAIN";
+}
+
+function shiftedDisplayPrediction(
+  base: string,
+  tally: CrowdStrategyTally,
+  agentId: AgentKey,
+): string {
+  const t = tallyTotal(tally);
+  if (t < 1) return base.toUpperCase();
+  const adjust = (tally.backYes - tally.backNo) / t;
+  const hedgeRatio = tally.hedge / t;
+  let s = predToScore(base);
+  s += adjust * 0.5;
+  s *= 1 - hedgeRatio * 0.55;
+  if (agentId === "claude") s -= adjust * 0.12;
+  if (agentId === "chatgpt") s += adjust * 0.08;
+  if (agentId === "gemini") s += adjust * 0.03;
+  return scoreToPred(s);
+}
+
+function dominantCrowdLabel(
+  pct: Record<Strategy, number>,
+): { key: Strategy; label: string; value: number } {
+  const best = STRATEGY_ORDER.reduce((a, b) =>
+    pct[b] > pct[a] ? b : a,
+  );
+  return {
+    key: best,
+    label: STRATEGY_META[best].barLabel,
+    value: pct[best],
+  };
+}
+
+function agentReasoningLine(
+  agentId: AgentKey,
+  name: string,
+  yesOdds: number,
+  pct: Record<Strategy, number>,
+  displayPred: string,
+): string {
+  const dom = dominantCrowdLabel(pct);
+  const toss = Math.abs(yesOdds - 50) < 8 ? "a coin flip" : `${yesOdds}% YES`;
+
+  switch (agentId) {
+    case "chatgpt":
+      return `${name}: Following market consensus at ${yesOdds}% YES — crowd leans ${dom.label} (${dom.value}%).`;
+    case "claude":
+      return `${name}: Fading crowd — contrarian read with ${displayPred} while the pack backs ${dom.label} (${dom.value}%).`;
+    case "gemini":
+      return `${name}: Balancing Polymarket at ${yesOdds}% YES against crowd ${dom.label} (${dom.value}%).`;
+    case "grok":
+      return `${name}: Treating this as ${toss}; crowd split ${pct.backYes}% YES / ${pct.backNo}% NO side.`;
+    default:
+      return `${name}: ${displayPred} at ${yesOdds}% YES.`;
+  }
+}
+
+const MAX_REASON = 140;
 
 export default function PredictionsPage() {
   const [markets, setMarkets] = useState<PolymarketMarketRow[]>([]);
@@ -148,7 +279,11 @@ export default function PredictionsPage() {
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [crowd, setCrowd] = useState<Record<string, CrowdTally>>({});
+  const [crowd, setCrowd] = useState<Record<string, CrowdStrategyTally>>({});
+  const [reasonDraft, setReasonDraft] = useState<Record<string, string>>({});
+  const [userSignal, setUserSignal] = useState<
+    Record<string, { strategy: Strategy; reasoning: string } | null>
+  >({});
   const [tick, setTick] = useState(0);
 
   const fetchPolymarket = useCallback(async () => {
@@ -192,16 +327,36 @@ export default function PredictionsPage() {
     return Math.max(0, Math.floor((Date.now() - lastFetchedAt) / 1000));
   }, [lastFetchedAt, tick]);
 
-  const bumpCrowd = (marketId: string, side: "yes" | "no") => {
-    setCrowd((prev) => {
-      const cur = prev[marketId] ?? { yes: 1, no: 1 };
-      return {
+  const selectStrategy = (
+    marketId: string,
+    strategy: Strategy,
+    yesOdds: number,
+    priorSignal: { strategy: Strategy; reasoning: string } | null | undefined,
+  ) => {
+    const raw = reasonDraft[marketId] ?? "";
+    const reasoning = raw.slice(0, MAX_REASON).trim();
+
+    if (priorSignal?.strategy === strategy) {
+      setUserSignal((prev) => ({
         ...prev,
-        [marketId]: {
-          yes: cur.yes + (side === "yes" ? 1 : 0),
-          no: cur.no + (side === "no" ? 1 : 0),
-        },
-      };
+        [marketId]: { strategy, reasoning },
+      }));
+      return;
+    }
+
+    setUserSignal((prev) => ({
+      ...prev,
+      [marketId]: { strategy, reasoning },
+    }));
+
+    setCrowd((prev) => {
+      const cur = { ...(prev[marketId] ?? initialCrowdFromOdds(yesOdds)) };
+      const prior = priorSignal?.strategy;
+      if (prior && prior !== strategy) {
+        cur[prior] = Math.max(1, cur[prior] - 1);
+      }
+      cur[strategy] = cur[strategy] + 1;
+      return { ...prev, [marketId]: cur };
     });
   };
 
@@ -273,9 +428,13 @@ export default function PredictionsPage() {
 
           {markets.map((m) => {
             const tally = crowd[m.id] ?? initialCrowdFromOdds(m.yesOdds);
-            const total = tally.yes + tally.no;
-            const crowdYesPct = total > 0 ? Math.round((tally.yes / total) * 100) : 50;
+            const pct = crowdPercents(tally);
             const closeLabel = formatMarketCloseLabel(m.endsAt, Date.now());
+            const signal = userSignal[m.id];
+            const draft = reasonDraft[m.id] ?? "";
+            const draftLen = draft.length;
+            const pick = (s: Strategy) =>
+              selectStrategy(m.id, s, m.yesOdds, signal);
 
             return (
               <article
@@ -315,7 +474,12 @@ export default function PredictionsPage() {
 
                 <div className="mt-8 grid grid-cols-2 gap-3 sm:gap-4">
                   {AGENTS.map((agent) => {
-                    const pred = m.predictions[agent.id] ?? "UNCERTAIN";
+                    const base = m.predictions[agent.id] ?? "UNCERTAIN";
+                    const pred = shiftedDisplayPrediction(
+                      base,
+                      tally,
+                      agent.id,
+                    );
                     return (
                       <div
                         key={agent.id}
@@ -328,7 +492,7 @@ export default function PredictionsPage() {
                           {agent.name}
                         </span>
                         <span
-                          className={`inline-flex min-w-[7rem] items-center justify-center rounded-lg px-3 py-2 text-sm font-black uppercase tracking-wider sm:text-base ${agentBadgeGlow(pred)}`}
+                          className={`inline-flex min-w-[7rem] items-center justify-center rounded-lg px-3 py-2 text-sm font-black uppercase tracking-wider transition-all duration-300 sm:text-base ${agentBadgeGlow(pred)}`}
                         >
                           {pred}
                         </span>
@@ -337,39 +501,169 @@ export default function PredictionsPage() {
                   })}
                 </div>
 
-                <div className="mt-8 border-t border-zinc-800/80 pt-6">
-                  <p className="text-center text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                    Back your prediction
+                <div className="mt-6 border-t border-zinc-800/60 pt-5">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                    Agent reasoning
                   </p>
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:justify-center sm:gap-4">
-                    <button
-                      type="button"
-                      onClick={() => bumpCrowd(m.id, "yes")}
-                      className="flex-1 rounded-xl border border-emerald-500/40 bg-emerald-500/10 py-3 text-sm font-bold uppercase tracking-wide text-emerald-300 transition-colors hover:bg-emerald-500/20 sm:flex-none sm:min-w-[140px]"
-                    >
-                      YES
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => bumpCrowd(m.id, "no")}
-                      className="flex-1 rounded-xl border border-red-500/40 bg-red-500/10 py-3 text-sm font-bold uppercase tracking-wide text-red-300 transition-colors hover:bg-red-500/20 sm:flex-none sm:min-w-[140px]"
-                    >
-                      NO
-                    </button>
-                  </div>
+                  <ul className="mt-3 space-y-2">
+                    {AGENTS.map((agent) => {
+                      const base = m.predictions[agent.id] ?? "UNCERTAIN";
+                      const displayPred = shiftedDisplayPrediction(
+                        base,
+                        tally,
+                        agent.id,
+                      );
+                      return (
+                        <li
+                          key={agent.id}
+                          className="text-[11px] leading-relaxed text-zinc-500 sm:text-xs"
+                        >
+                          {agentReasoningLine(
+                            agent.id,
+                            agent.name,
+                            m.yesOdds,
+                            pct,
+                            displayPred,
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
 
-                <div className="mt-6">
-                  <div className="mb-2 flex justify-between text-[11px] text-zinc-500">
-                    <span>Crowd · YES {crowdYesPct}%</span>
-                    <span>NO {100 - crowdYesPct}%</span>
+                <div className="mt-8 border-t border-zinc-800/80 pt-6">
+                  <p className="text-center text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                    Guide the agents
+                  </p>
+                  <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => pick("backYes")}
+                      className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
+                        signal?.strategy === "backYes"
+                          ? "border-emerald-400/70 bg-emerald-500/25 text-emerald-100 ring-2 ring-emerald-400/40"
+                          : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                      } px-4`}
+                    >
+                      {STRATEGY_META.backYes.label}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => pick("backNo")}
+                      className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
+                        signal?.strategy === "backNo"
+                          ? "border-red-400/70 bg-red-500/25 text-red-100 ring-2 ring-red-400/40"
+                          : "border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                      } px-4`}
+                    >
+                      {STRATEGY_META.backNo.label}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => pick("hedge")}
+                      className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
+                        signal?.strategy === "hedge"
+                          ? "border-amber-400/70 bg-amber-500/25 text-amber-100 ring-2 ring-amber-400/40"
+                          : "border-amber-500/45 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
+                      } px-4`}
+                    >
+                      {STRATEGY_META.hedge.label}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => pick("skip")}
+                      className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
+                        signal?.strategy === "skip"
+                          ? "border-zinc-400/50 bg-zinc-600/35 text-zinc-100 ring-2 ring-zinc-500/40"
+                          : "border-zinc-600/60 bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700/80"
+                      } px-4`}
+                    >
+                      {STRATEGY_META.skip.label}
+                    </button>
+                  </div>
+
+                  <div className="mt-4">
+                    <label htmlFor={`reason-${m.id}`} className="sr-only">
+                      Optional reasoning for agents
+                    </label>
+                    <textarea
+                      id={`reason-${m.id}`}
+                      rows={2}
+                      maxLength={MAX_REASON}
+                      placeholder="Optional: tell the agent why (e.g. 'ETH has strong support at $1,900')"
+                      value={draft}
+                      onChange={(e) =>
+                        setReasonDraft((prev) => ({
+                          ...prev,
+                          [m.id]: e.target.value.slice(0, MAX_REASON),
+                        }))
+                      }
+                      className="w-full resize-none rounded-xl border border-zinc-700/80 bg-zinc-950/80 px-3 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500/40"
+                    />
+                    <div className="mt-1 flex justify-end text-[11px] tabular-nums text-zinc-500">
+                      {draftLen} / {MAX_REASON}
+                    </div>
+                  </div>
+
+                  {signal && (
+                    <div className="mt-5 rounded-xl border border-white/[0.08] bg-zinc-950/60 p-4">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                        Your signal
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-white">
+                        {STRATEGY_META[signal.strategy].summary}
+                      </p>
+                      {signal.reasoning ? (
+                        <p className="mt-2 text-sm leading-relaxed text-zinc-400">
+                          &ldquo;{signal.reasoning}&rdquo;
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-xs italic text-zinc-600">
+                          No note added
+                        </p>
+                      )}
+                      <p className="mt-3 text-xs font-medium text-emerald-400/90">
+                        Signal sent to agents ✓
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-8">
+                  <p className="mb-2 text-center text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                    Crowd strategies
+                  </p>
+                  <div className="mb-1.5 grid grid-cols-4 gap-1 text-[9px] font-semibold tabular-nums sm:text-[10px]">
+                    <span className="text-center text-emerald-400/90">
+                      Back YES {pct.backYes}%
+                    </span>
+                    <span className="text-center text-amber-400/90">
+                      Hedge {pct.hedge}%
+                    </span>
+                    <span className="text-center text-red-400/90">
+                      Back NO {pct.backNo}%
+                    </span>
+                    <span className="text-center text-zinc-400">
+                      Skip {pct.skip}%
+                    </span>
                   </div>
                   <div className="flex h-3 w-full overflow-hidden rounded-full bg-zinc-800">
                     <div
                       className="bg-emerald-500 transition-all duration-300"
-                      style={{ width: `${crowdYesPct}%` }}
+                      style={{ width: `${pct.backYes}%` }}
                     />
-                    <div className="min-w-0 flex-1 bg-red-500/90 transition-all duration-300" />
+                    <div
+                      className="bg-amber-500 transition-all duration-300"
+                      style={{ width: `${pct.hedge}%` }}
+                    />
+                    <div
+                      className="bg-red-500 transition-all duration-300"
+                      style={{ width: `${pct.backNo}%` }}
+                    />
+                    <div
+                      className="min-w-0 bg-zinc-500 transition-all duration-300"
+                      style={{ width: `${pct.skip}%` }}
+                    />
                   </div>
                 </div>
               </article>
