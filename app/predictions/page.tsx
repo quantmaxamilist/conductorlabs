@@ -62,7 +62,13 @@ function parseMarkets(json: unknown): {
       if (predsRaw && typeof predsRaw === "object" && predsRaw !== null) {
         const pr = predsRaw as Record<string, unknown>;
         for (const a of AGENTS) {
-          predictions[a.id] = normalizePolyPrediction(pr[a.id]);
+          const raw = pr[a.id];
+          if (raw && typeof raw === "object" && raw !== null) {
+            const o = raw as Record<string, unknown>;
+            predictions[a.id] = normalizePolyPrediction(o.prediction);
+          } else {
+            predictions[a.id] = normalizePolyPrediction(raw);
+          }
         }
       }
       rows.push({
