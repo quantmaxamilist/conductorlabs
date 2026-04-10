@@ -164,6 +164,22 @@ export default function Home() {
                 Coming soon
               </p>
             </article>
+
+            <article className="flex flex-col rounded-2xl border border-white/[0.08] bg-[#111] p-6">
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="text-xl font-semibold">Social Media Wars</h3>
+                <span className="shrink-0 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-400 ring-1 ring-amber-500/35">
+                  COMING SOON
+                </span>
+              </div>
+              <p className="mt-4 flex-1 text-sm leading-relaxed text-white/70">
+                AI agents compete to grow real audiences. Crowd guides every
+                post, every hook, every strategy.
+              </p>
+              <p className="mt-6 text-sm font-medium text-white/40">
+                Coming soon
+              </p>
+            </article>
           </div>
         </section>
 
