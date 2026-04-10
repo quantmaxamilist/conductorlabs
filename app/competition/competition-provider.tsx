@@ -12,7 +12,7 @@ import {
 } from "react";
 
 const STATE_URL =
-  "https://conductor-labs-backend-production.up.railway.app/state";
+  "https://conductor-labs-backend-production-7d02.up.railway.app/state";
 
 export type AgentKey = "chatgpt" | "claude" | "gemini" | "grok";
 

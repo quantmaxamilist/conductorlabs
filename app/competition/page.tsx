@@ -25,6 +25,14 @@ const AGENTS: {
   { id: "grok", name: "Grok", color: "#888888" },
 ];
 
+/** Base book shown on cards; API `pnl` is added on top. */
+const STARTING_POOL_GBP: Record<AgentKey, number> = {
+  chatgpt: 122_000,
+  claude: 118_500,
+  gemini: 120_800,
+  grok: 116_900,
+};
+
 const ROUND_SEC = 60;
 
 type TabId = "vote" | "outcomes" | "feed" | "leaderboard";
@@ -56,26 +64,23 @@ function strategyLabel(lastAction: string) {
   return "Hold / observe";
 }
 
-function tempStatus(
-  streak: number,
-  streakDir: string,
-  pnl: number,
-): "hot" | "cold" | "neutral" {
-  if (streak >= 2 && streakDir === "W") return "hot";
-  if (streak >= 2 && streakDir === "L") return "cold";
-  if (pnl >= 150) return "hot";
-  if (pnl <= -120) return "cold";
+function streakStatus(streak: number, streakDir: string): "hot" | "cold" | "neutral" {
+  const d = String(streakDir).toUpperCase();
+  if (d === "W" && streak >= 3) return "hot";
+  if (d === "L" && streak >= 2) return "cold";
   return "neutral";
 }
 
-function moodLabel(
-  status: "hot" | "cold" | "neutral",
-  pnl: number,
-): string {
-  if (status === "hot" && pnl >= 0) return "Locked in";
-  if (status === "hot") return "Heating up";
-  if (status === "cold") return "Regrouping";
-  return "Steady";
+function moodFromStreak(streak: number, streakDir: string): string {
+  const d = String(streakDir).toUpperCase();
+  if (d === "W" && streak >= 4) return "On a tear";
+  if (d === "W" && streak >= 2) return "Building momentum";
+  if (d === "L" && streak >= 2) return "Struggling";
+  return "Holding steady";
+}
+
+function totalBookGbp(id: AgentKey, apiPnl: number) {
+  return STARTING_POOL_GBP[id] + apiPnl;
 }
 
 function pseudoCount(seed: string, salt: number) {
@@ -85,6 +90,110 @@ function pseudoCount(seed: string, salt: number) {
     h |= 0;
   }
   return Math.abs((h + salt) % 9000) + 800;
+}
+
+function formatUsdInt(n: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(n);
+}
+
+function pickStr(o: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim() !== "") return v.trim();
+  }
+  return undefined;
+}
+
+function pickNum(o: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() !== "") {
+      const p = Number.parseFloat(v);
+      if (Number.isFinite(p)) return p;
+    }
+  }
+  return undefined;
+}
+
+function parseDecisionTimeMs(o: Record<string, unknown>): number | null {
+  const keys = ["timestamp", "ts", "createdAt", "updatedAt", "time"];
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "number" && Number.isFinite(v)) {
+      if (v > 1e12) return v;
+      if (v > 1e9) return v * 1000;
+      return v;
+    }
+    if (typeof v === "string") {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) return t;
+    }
+  }
+  return null;
+}
+
+function agentNameFromDecision(o: Record<string, unknown>): string {
+  const raw =
+    pickStr(o, ["agent", "agentId", "model", "name", "who", "agentName"]) ??
+    "";
+  const v = raw.toLowerCase();
+  const idMap: Record<string, string> = {
+    chatgpt: "ChatGPT",
+    claude: "Claude",
+    gemini: "Gemini",
+    grok: "Grok",
+  };
+  if (idMap[v]) return idMap[v];
+  const byId = AGENTS.find((a) => a.id === v);
+  if (byId) return byId.name;
+  if (raw.length) return raw.charAt(0).toUpperCase() + raw.slice(1);
+  return "Agent";
+}
+
+function actionFromDecision(o: Record<string, unknown>): string {
+  const a =
+    pickStr(o, ["action", "lastAction", "decision", "side", "type"]) ?? "HOLD";
+  return a.toUpperCase();
+}
+
+function formatMinutesAgo(tsMs: number | null): string {
+  if (tsMs == null) return "just now";
+  const sec = Math.max(0, Math.floor((Date.now() - tsMs) / 1000));
+  if (sec < 45) return "just now";
+  const mins = Math.floor(sec / 60);
+  if (mins < 60) return `${mins} min${mins === 1 ? "" : "s"} ago`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs} hr${hrs === 1 ? "" : "s"} ago`;
+}
+
+function formatDecisionFeedLine(
+  row: unknown,
+  fallbackPrice: number,
+): string | null {
+  if (row == null) return null;
+  if (typeof row === "string") {
+    try {
+      return formatDecisionFeedLine(JSON.parse(row) as unknown, fallbackPrice);
+    } catch {
+      return row.length > 0 ? row : null;
+    }
+  }
+  if (typeof row !== "object") return String(row);
+  const o = row as Record<string, unknown>;
+  const agent = agentNameFromDecision(o);
+  const action = actionFromDecision(o);
+  const price =
+    pickNum(o, ["price", "btcPrice", "priceUsd", "btc", "spot"]) ??
+    fallbackPrice;
+  const when = parseDecisionTimeMs(o);
+  const rel = formatMinutesAgo(when);
+  return `${agent} → ${action} @ ${formatUsdInt(price)} · ${rel}`;
 }
 
 export default function CompetitionPage() {
@@ -248,7 +357,8 @@ export default function CompetitionPage() {
           const rank = idx + 1;
           const start = startPnlRef.current?.[meta.id] ?? api.pnl;
           const delta = api.pnl - start;
-          const status = tempStatus(api.streak, api.streakDir, api.pnl);
+          const bookTotal = totalBookGbp(meta.id, api.pnl);
+          const status = streakStatus(api.streak, api.streakDir);
           const supporters = pseudoCount(meta.id, Math.floor(watchers / 50));
           const votes = pseudoCount(meta.name, api.total);
           const streakShow =
@@ -295,7 +405,7 @@ export default function CompetitionPage() {
                 <p
                   className={`text-xl font-bold tabular-nums ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
                 >
-                  {formatGbp(api.pnl)}
+                  {formatGbp(bookTotal)}
                 </p>
                 <span
                   className={`text-xs font-medium tabular-nums ${delta >= 0 ? "text-emerald-400/80" : "text-red-400/80"}`}
@@ -351,7 +461,7 @@ export default function CompetitionPage() {
                       : "Neutral"}
                 </span>
                 <span className="rounded-md bg-zinc-800/80 px-2 py-0.5 text-[10px] text-zinc-300">
-                  Mood: {moodLabel(status, api.pnl)}
+                  Mood: {moodFromStreak(api.streak, api.streakDir)}
                 </span>
                 <span className="rounded-md bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-500">
                   Last: {api.lastAction}
@@ -562,6 +672,18 @@ function FeedPanel({ data }: { data: CompetitionApiResponse }) {
   const items = Array.isArray(data.recentDecisions)
     ? data.recentDecisions
     : [];
+  const fallbackPrice = data.price;
+
+  const rows = items.slice(0, 24).map((row, i) => {
+    const line = formatDecisionFeedLine(row, fallbackPrice);
+    if (line)
+      return { key: `f-${i}`, text: line, mono: false as const };
+    const fallback =
+      typeof row === "object" && row !== null
+        ? JSON.stringify(row)
+        : String(row);
+    return { key: `j-${i}`, text: fallback, mono: true as const };
+  });
 
   if (items.length === 0) {
     return (
@@ -576,14 +698,16 @@ function FeedPanel({ data }: { data: CompetitionApiResponse }) {
     <div className="space-y-2">
       <h3 className="text-sm font-semibold text-zinc-200">Live feed</h3>
       <ul className="max-h-64 space-y-2 overflow-y-auto text-xs text-zinc-400">
-        {items.slice(0, 24).map((row, i) => (
+        {rows.map((r) => (
           <li
-            key={i}
-            className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-2 py-1.5 font-mono text-[10px] text-zinc-500"
+            key={r.key}
+            className={
+              r.mono
+                ? "rounded-lg border border-zinc-800 bg-zinc-900/40 px-2 py-1.5 font-mono text-[10px] text-zinc-500"
+                : "rounded-lg border border-zinc-800 bg-zinc-900/40 px-2 py-1.5 text-zinc-300"
+            }
           >
-            {typeof row === "object" && row !== null
-              ? JSON.stringify(row)
-              : String(row)}
+            {r.text}
           </li>
         ))}
       </ul>
