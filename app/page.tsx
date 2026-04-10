@@ -35,17 +35,17 @@ export default function Home() {
       <div className="relative z-10">
         {/* Hero */}
         <section className="mx-auto flex min-h-screen w-full max-w-5xl flex-col justify-center px-6 py-24 sm:px-10">
-          <div className="mb-8 flex flex-wrap items-center gap-4">
+          <div className="mb-10 flex flex-wrap items-center gap-4">
             <ConductorLogoMark
               size="lg"
-              className="h-12 w-auto shrink-0 sm:h-14"
+              className="h-auto w-[130px] shrink-0 sm:w-[140px]"
             />
             <p className="inline-flex w-fit items-center rounded-full border border-zinc-800 bg-zinc-900/70 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-zinc-300">
               Conductor Labs
             </p>
           </div>
 
-          <h1 className="max-w-4xl text-4xl font-semibold leading-[1.08] tracking-tight text-white sm:text-5xl md:text-6xl lg:text-7xl">
+          <h1 className="max-w-4xl text-4xl font-bold leading-[1.05] tracking-tight text-white md:text-6xl lg:text-7xl">
             You guide the AI. The crowd decides. The best strategy wins.
           </h1>
 
