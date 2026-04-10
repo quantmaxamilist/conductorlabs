@@ -7,6 +7,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type Dispatch,
+  type SetStateAction,
 } from "react";
 import {
   type AgentKey,
@@ -25,6 +27,43 @@ const AGENTS: {
   { id: "gemini", name: "Gemini", color: "#4285f4" },
   { id: "grok", name: "Grok", color: "#888888" },
 ];
+
+const AGENT_STRATEGY_BLURB: Record<AgentKey, string> = {
+  chatgpt:
+    "Momentum: buying when price rises above 5-min average",
+  claude:
+    "Mean reversion: fading sharp moves after RSI extremes",
+  gemini:
+    "Breakout scout: scales in on volume-confirmed thrusts",
+  grok:
+    "Volatility sleeve: rotates on ATR spikes and stall patterns",
+};
+
+type GuideStrategy = "long" | "wait" | "short" | "hold";
+
+const GUIDE_STRATEGY_ORDER: GuideStrategy[] = ["long", "wait", "short", "hold"];
+
+const GUIDE_STRATEGY_META: Record<
+  GuideStrategy,
+  { label: string; bar: string }
+> = {
+  long: {
+    label: "Enter long — buy the momentum",
+    bar: "Long",
+  },
+  wait: {
+    label: "Stay out — wait for better entry",
+    bar: "Wait",
+  },
+  short: {
+    label: "Go short — fade the move",
+    bar: "Short",
+  },
+  hold: {
+    label: "Hold current position",
+    bar: "Hold",
+  },
+};
 
 /** Base book shown on cards; API `pnl` is added on top. */
 const STARTING_POOL_GBP: Record<AgentKey, number> = {
@@ -58,39 +97,8 @@ function formatBtc(price: number) {
   }).format(price);
 }
 
-function strategyLabel(lastAction: string) {
-  const a = lastAction.toUpperCase();
-  if (a === "BUY") return "Long BTC";
-  if (a === "SELL") return "Reduce exposure";
-  return "Hold / observe";
-}
-
-function streakStatus(streak: number, streakDir: string): "hot" | "cold" | "neutral" {
-  const d = String(streakDir).toUpperCase();
-  if (d === "W" && streak >= 3) return "hot";
-  if (d === "L" && streak >= 2) return "cold";
-  return "neutral";
-}
-
-function moodFromStreak(streak: number, streakDir: string): string {
-  const d = String(streakDir).toUpperCase();
-  if (d === "W" && streak >= 4) return "On a tear";
-  if (d === "W" && streak >= 2) return "Building momentum";
-  if (d === "L" && streak >= 2) return "Struggling";
-  return "Holding steady";
-}
-
 function totalBookGbp(id: AgentKey, apiPnl: number) {
   return STARTING_POOL_GBP[id] + apiPnl;
-}
-
-function pseudoCount(seed: string, salt: number) {
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) {
-    h = (h << 5) - h + seed.charCodeAt(i);
-    h |= 0;
-  }
-  return Math.abs((h + salt) % 9000) + 800;
 }
 
 function formatUsdInt(n: number) {
@@ -232,18 +240,114 @@ function formatStreakLabel(api: AgentApiState): string {
   return d === "L" ? `${api.streak}L` : `${api.streak}W`;
 }
 
+function lastMoveOutcomePhrase(api: AgentApiState): string {
+  if (api.total === 0) return "evaluating";
+  const d = String(api.streakDir).toUpperCase();
+  if (d === "W" && api.streak >= 2) return "in the green";
+  if (d === "L" && api.streak >= 2) return "under pressure";
+  return "evaluating";
+}
+
+function formatLastMoveLine(api: AgentApiState, priceUsd: number): string {
+  const act = String(api.lastAction || "HOLD").toUpperCase();
+  const px = formatUsdInt(priceUsd);
+  const tail = lastMoveOutcomePhrase(api);
+  if (act === "BUY") return `BUY @ ${px} — ${tail}`;
+  if (act === "SELL") return `SELL @ ${px} — ${tail}`;
+  return `HOLD @ ${px} — ${tail}`;
+}
+
+function formatBtc5mConditionLine(pct: number): string {
+  const dir = pct >= 0 ? "up" : "down";
+  const abs = Math.abs(pct).toFixed(1);
+  let tail = "two-way flow";
+  if (pct > 0.8) tail = "momentum building";
+  else if (pct > 0.2) tail = "bias higher";
+  else if (pct < -0.8) tail = "selling pressure";
+  else if (pct < -0.2) tail = "fade in play";
+  return `BTC ${dir} ${abs}% in last 5 mins — ${tail}`;
+}
+
+function leaderNextThought(
+  leaderName: string,
+  pct5m: number,
+  priceUsd: number,
+): string {
+  const px = formatUsdInt(priceUsd);
+  const s = pct5m >= 0 ? "+" : "";
+  if (pct5m > 0.35) {
+    return `${leaderName} is weighing a momentum long — BTC ${s}${pct5m.toFixed(1)}% over 5m near ${px}.`;
+  }
+  if (pct5m < -0.35) {
+    return `${leaderName} is watching for a counter-trend — BTC ${pct5m.toFixed(1)}% over 5m at ${px}.`;
+  }
+  return `${leaderName} is balancing chop — flat 5m drift (${s}${pct5m.toFixed(1)}%) around ${px}.`;
+}
+
+function initialGuideCrowd(): Record<GuideStrategy, number> {
+  return { long: 28, wait: 22, short: 18, hold: 14 };
+}
+
+function guideCrowdPercents(
+  t: Record<GuideStrategy, number>,
+): Record<GuideStrategy, number> {
+  const tot = t.long + t.wait + t.short + t.hold;
+  if (tot <= 0) return { long: 25, wait: 25, short: 25, hold: 25 };
+  const p = {
+    long: Math.round((t.long / tot) * 100),
+    wait: Math.round((t.wait / tot) * 100),
+    short: Math.round((t.short / tot) * 100),
+    hold: Math.round((t.hold / tot) * 100),
+  };
+  const diff = 100 - (p.long + p.wait + p.short + p.hold);
+  if (diff !== 0) {
+    const maxK = GUIDE_STRATEGY_ORDER.reduce((a, b) => (p[a] >= p[b] ? a : b));
+    p[maxK] += diff;
+  }
+  return p;
+}
+
 export default function CompetitionPage() {
   const router = useRouter();
   const { data } = useCompetitionState();
   const [watchers, setWatchers] = useState(18420);
   const [secondsLeft, setSecondsLeft] = useState(ROUND_SEC);
   const [roundPulse, setRoundPulse] = useState(false);
+  const [guideSignalFlash, setGuideSignalFlash] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("vote");
   const [backedId, setBackedId] = useState<AgentKey | null>(null);
   const [toasts, setToasts] = useState<RankToast[]>([]);
+  const [priceTrail, setPriceTrail] = useState<{ t: number; p: number }[]>([]);
+  const [guideCrowd, setGuideCrowd] = useState(initialGuideCrowd);
+  const [guidePick, setGuidePick] = useState<GuideStrategy | null>(null);
+  const [guideDraft, setGuideDraft] = useState("");
   const startPnlRef = useRef<Record<AgentKey, number> | null>(null);
   const prevRanksRef = useRef<Record<AgentKey, number> | null>(null);
   const lastRankToastAt = useRef<Partial<Record<AgentKey, number>>>({});
+  const prevSecondsRef = useRef(secondsLeft);
+
+  useEffect(() => {
+    const now = Date.now();
+    setPriceTrail((prev) => {
+      const kept = prev.filter((x) => now - x.t <= 5 * 60 * 1000);
+      const last = kept[kept.length - 1];
+      if (last && last.p === data.price && now - last.t < 1500) return kept;
+      return [...kept, { t: now, p: data.price }];
+    });
+  }, [data.price]);
+
+  useEffect(() => {
+    const prev = prevSecondsRef.current;
+    let tid: number | undefined;
+    if (prev === 1 && secondsLeft === ROUND_SEC) {
+      setGuideSignalFlash(true);
+      tid = window.setTimeout(() => setGuideSignalFlash(false), 2600);
+    }
+    prevSecondsRef.current = secondsLeft;
+    return () => {
+      if (tid !== undefined) window.clearTimeout(tid);
+    };
+  }, [secondsLeft]);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -318,6 +422,19 @@ export default function CompetitionPage() {
   const progress = (secondsLeft / ROUND_SEC) * 100;
   const urgent = secondsLeft <= 10;
 
+  const btc5mPct = useMemo(() => {
+    if (priceTrail.length < 2) return 0;
+    const first = priceTrail[0];
+    const last = priceTrail[priceTrail.length - 1];
+    if (first.p <= 0) return 0;
+    return ((last.p - first.p) / first.p) * 100;
+  }, [priceTrail]);
+
+  const marketConditionLine = useMemo(
+    () => formatBtc5mConditionLine(btc5mPct),
+    [btc5mPct],
+  );
+
   const totalDecisions = useMemo(() => {
     const fromApi = Array.isArray(data.recentDecisions)
       ? data.recentDecisions.length
@@ -388,16 +505,13 @@ export default function CompetitionPage() {
         </p>
       </section>
 
-      {/* Agent grid */}
+      {/* Agent grid — Part 1: current position */}
       <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {sortedAgents.map(({ meta, api }, idx) => {
           const rank = idx + 1;
           const start = startPnlRef.current?.[meta.id] ?? api.pnl;
           const delta = api.pnl - start;
           const bookTotal = totalBookGbp(meta.id, api.pnl);
-          const status = streakStatus(api.streak, api.streakDir);
-          const supporters = pseudoCount(meta.id, Math.floor(watchers / 50));
-          const votes = pseudoCount(meta.name, api.total);
           const streakShow =
             api.streak >= 3 && api.streakDir === "W"
               ? `${api.streak}W+`
@@ -407,7 +521,7 @@ export default function CompetitionPage() {
           return (
             <article
               key={meta.id}
-              className="relative flex flex-col gap-2 rounded-xl border border-zinc-800/90 bg-[#111] p-3 shadow-sm transition-shadow duration-300"
+              className="relative flex flex-col gap-3 rounded-xl border border-zinc-800/90 bg-[#111] p-3 shadow-sm transition-shadow duration-300 sm:p-4"
               style={
                 backedId === meta.id
                   ? {
@@ -417,20 +531,25 @@ export default function CompetitionPage() {
               }
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 items-center gap-2">
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-zinc-800 text-sm font-bold text-zinc-100">
                     #{rank}
                   </span>
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-100">
+                  <div className="min-w-0">
+                    <h2
+                      className="truncate text-sm font-semibold sm:text-base"
+                      style={{ color: meta.color }}
+                    >
                       {meta.name}
                     </h2>
-                    <p className="text-xs text-zinc-500">Live book</p>
+                    <p className="text-[10px] text-zinc-500 sm:text-xs">
+                      Current position
+                    </p>
                   </div>
                 </div>
                 {streakShow && (
                   <span
-                    className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white"
+                    className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white"
                     style={{ backgroundColor: meta.color }}
                   >
                     {streakShow}
@@ -440,7 +559,7 @@ export default function CompetitionPage() {
 
               <div className="flex flex-wrap items-end gap-2">
                 <p
-                  className={`text-xl font-bold tabular-nums ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                  className={`text-xl font-bold tabular-nums sm:text-2xl ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
                 >
                   {formatGbp(bookTotal)}
                 </p>
@@ -451,63 +570,56 @@ export default function CompetitionPage() {
                   {formatGbp(delta)} vs start
                 </span>
               </div>
+              <p
+                className={`text-xs font-semibold tabular-nums ${api.pnl >= 0 ? "text-emerald-400/90" : "text-red-400/90"}`}
+              >
+                Live P&amp;L {formatGbp(api.pnl)}
+              </p>
 
-              <div className="grid grid-cols-2 gap-2 text-[11px] text-zinc-400">
+              <div className="space-y-2 border-t border-zinc-800/80 pt-3 text-[11px] leading-relaxed text-zinc-400 sm:text-xs">
                 <div>
-                  <p className="text-zinc-600">Supporters</p>
-                  <p className="font-medium text-zinc-200 tabular-nums">
-                    {supporters.toLocaleString()}
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                    Strategy
+                  </p>
+                  <p className="mt-0.5 text-zinc-300">
+                    {AGENT_STRATEGY_BLURB[meta.id]}
                   </p>
                 </div>
                 <div>
-                  <p className="text-zinc-600">Votes cast</p>
-                  <p className="font-medium text-zinc-200 tabular-nums">
-                    {votes.toLocaleString()}
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                    Last move
+                  </p>
+                  <p className="mt-0.5 text-zinc-200">
+                    {formatLastMoveLine(api, data.price)}
                   </p>
                 </div>
                 <div>
-                  <p className="text-zinc-600">Live P&amp;L</p>
-                  <p
-                    className={`font-semibold tabular-nums ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
-                  >
-                    {formatGbp(api.pnl)}
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                    Market watch
                   </p>
+                  <p className="mt-0.5 text-zinc-300">{marketConditionLine}</p>
                 </div>
-                <div>
-                  <p className="text-zinc-600">Strategy</p>
-                  <p className="font-medium text-zinc-200">
-                    {strategyLabel(api.lastAction)}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2 border-t border-zinc-800/80 pt-2">
-                <span
-                  className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase ${
-                    status === "hot"
-                      ? "bg-orange-500/20 text-orange-300 ring-1 ring-orange-500/30"
-                      : status === "cold"
-                        ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/25"
-                        : "bg-zinc-800 text-zinc-400"
-                  }`}
-                >
-                  {status === "hot"
-                    ? "Hot"
-                    : status === "cold"
-                      ? "Cold"
-                      : "Neutral"}
-                </span>
-                <span className="rounded-md bg-zinc-800/80 px-2 py-0.5 text-[10px] text-zinc-300">
-                  Mood: {moodFromStreak(api.streak, api.streakDir)}
-                </span>
-                <span className="rounded-md bg-zinc-900 px-2 py-0.5 text-[10px] text-zinc-500">
-                  Last: {api.lastAction}
-                </span>
               </div>
             </article>
           );
         })}
       </section>
+
+      {/* Part 2: guide next move (60s cadence) */}
+      <GuideNextMovePanel
+        secondsLeft={secondsLeft}
+        urgent={urgent}
+        leader={sortedAgents[0]}
+        btc5mPct={btc5mPct}
+        btcPrice={data.price}
+        guideFlash={guideSignalFlash}
+        guideCrowd={guideCrowd}
+        setGuideCrowd={setGuideCrowd}
+        guidePick={guidePick}
+        setGuidePick={setGuidePick}
+        guideDraft={guideDraft}
+        setGuideDraft={setGuideDraft}
+      />
 
       {/* Rank toasts */}
       <div className="pointer-events-none fixed bottom-24 left-3 z-50 flex max-w-[min(100%,20rem)] flex-col gap-2 sm:left-6">
@@ -590,6 +702,193 @@ export default function CompetitionPage() {
         )}
       </section>
     </div>
+  );
+}
+
+const MAX_GUIDE_REASON = 140;
+
+function GuideNextMovePanel({
+  secondsLeft,
+  urgent,
+  leader,
+  btc5mPct,
+  btcPrice,
+  guideFlash,
+  guideCrowd,
+  setGuideCrowd,
+  guidePick,
+  setGuidePick,
+  guideDraft,
+  setGuideDraft,
+}: {
+  secondsLeft: number;
+  urgent: boolean;
+  leader: { meta: (typeof AGENTS)[number]; api: AgentApiState };
+  btc5mPct: number;
+  btcPrice: number;
+  guideFlash: boolean;
+  guideCrowd: Record<GuideStrategy, number>;
+  setGuideCrowd: Dispatch<SetStateAction<Record<GuideStrategy, number>>>;
+  guidePick: GuideStrategy | null;
+  setGuidePick: Dispatch<SetStateAction<GuideStrategy | null>>;
+  guideDraft: string;
+  setGuideDraft: Dispatch<SetStateAction<string>>;
+}) {
+  const pct = guideCrowdPercents(guideCrowd);
+  const thought = leaderNextThought(leader.meta.name, btc5mPct, btcPrice);
+
+  const pickStrategy = (s: GuideStrategy) => {
+    if (guidePick === s) return;
+    setGuideCrowd((prev) => {
+      const next = { ...prev };
+      if (guidePick != null) {
+        next[guidePick] = Math.max(1, next[guidePick] - 1);
+      }
+      next[s] = next[s] + 1;
+      return next;
+    });
+    setGuidePick(s);
+  };
+
+  return (
+    <section className="mt-5 rounded-xl border border-zinc-800/90 bg-[#111] p-4 shadow-sm sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-800/80 pb-4">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-200 sm:text-base">
+            Guide the next move
+          </h3>
+          <p className="mt-2 text-xs leading-relaxed text-zinc-400 sm:text-sm">
+            <span className="font-semibold text-zinc-200">
+              Leading:{" "}
+              <span style={{ color: leader.meta.color }}>{leader.meta.name}</span>
+            </span>{" "}
+            — {thought}
+          </p>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+            Next decision
+          </p>
+          <p
+            className={`mt-0.5 font-mono text-xl font-bold tabular-nums sm:text-2xl ${urgent ? "text-red-400" : "text-zinc-100"}`}
+          >
+            {secondsLeft}
+            <span className="text-sm font-medium text-zinc-500">s</span>
+          </p>
+        </div>
+      </div>
+
+      {guideFlash && (
+        <div className="mt-4 animate-pulse rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-center text-xs font-semibold text-emerald-300 sm:text-sm">
+          Signal sent. Agents are executing.
+        </div>
+      )}
+
+      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => pickStrategy("long")}
+          className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
+            guidePick === "long"
+              ? "border-emerald-400/70 bg-emerald-500/25 text-emerald-100 ring-2 ring-emerald-400/40"
+              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+          } px-4`}
+        >
+          {GUIDE_STRATEGY_META.long.label}
+        </button>
+        <button
+          type="button"
+          onClick={() => pickStrategy("wait")}
+          className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
+            guidePick === "wait"
+              ? "border-amber-400/70 bg-amber-500/25 text-amber-100 ring-2 ring-amber-400/40"
+              : "border-amber-500/45 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
+          } px-4`}
+        >
+          {GUIDE_STRATEGY_META.wait.label}
+        </button>
+        <button
+          type="button"
+          onClick={() => pickStrategy("short")}
+          className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
+            guidePick === "short"
+              ? "border-red-400/70 bg-red-500/25 text-red-100 ring-2 ring-red-400/40"
+              : "border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+          } px-4`}
+        >
+          {GUIDE_STRATEGY_META.short.label}
+        </button>
+        <button
+          type="button"
+          onClick={() => pickStrategy("hold")}
+          className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
+            guidePick === "hold"
+              ? "border-zinc-400/50 bg-zinc-600/35 text-zinc-100 ring-2 ring-zinc-500/40"
+              : "border-zinc-600/60 bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700/80"
+          } px-4`}
+        >
+          {GUIDE_STRATEGY_META.hold.label}
+        </button>
+      </div>
+
+      <div className="mt-4">
+        <label htmlFor="guide-agent-reason" className="sr-only">
+          Tell the agents why
+        </label>
+        <textarea
+          id="guide-agent-reason"
+          rows={2}
+          maxLength={MAX_GUIDE_REASON}
+          placeholder="Tell the agents why (e.g. 'Fed meeting tomorrow could cause volatility')"
+          value={guideDraft}
+          onChange={(e) =>
+            setGuideDraft(e.target.value.slice(0, MAX_GUIDE_REASON))
+          }
+          className="w-full resize-none rounded-xl border border-zinc-700/80 bg-zinc-950/80 px-3 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500/40"
+        />
+        <div className="mt-1 flex justify-end text-[11px] tabular-nums text-zinc-500">
+          {guideDraft.length} / {MAX_GUIDE_REASON}
+        </div>
+      </div>
+
+      <div className="mt-5">
+        <p className="mb-2 text-center text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+          Crowd strategies
+        </p>
+        <div className="mb-1.5 grid grid-cols-4 gap-0.5 text-[8px] font-semibold tabular-nums leading-tight sm:gap-1 sm:text-[10px]">
+          <span className="text-center text-emerald-400/90">
+            {GUIDE_STRATEGY_META.long.bar} {pct.long}%
+          </span>
+          <span className="text-center text-amber-400/90">
+            {GUIDE_STRATEGY_META.wait.bar} {pct.wait}%
+          </span>
+          <span className="text-center text-red-400/90">
+            {GUIDE_STRATEGY_META.short.bar} {pct.short}%
+          </span>
+          <span className="text-center text-zinc-400">
+            {GUIDE_STRATEGY_META.hold.bar} {pct.hold}%
+          </span>
+        </div>
+        <div className="flex h-3 w-full overflow-hidden rounded-full bg-zinc-800">
+          <div
+            className="bg-emerald-500 transition-all duration-300"
+            style={{ width: `${pct.long}%` }}
+          />
+          <div
+            className="bg-amber-500 transition-all duration-300"
+            style={{ width: `${pct.wait}%` }}
+          />
+          <div
+            className="bg-red-500 transition-all duration-300"
+            style={{ width: `${pct.short}%` }}
+          />
+          <div
+            className="min-w-0 bg-zinc-500 transition-all duration-300"
+            style={{ width: `${pct.hold}%` }}
+          />
+        </div>
+      </div>
+    </section>
   );
 }
 
