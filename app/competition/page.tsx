@@ -35,7 +35,15 @@ const STARTING_POOL_GBP: Record<AgentKey, number> = {
 
 const ROUND_SEC = 60;
 
-type TabId = "vote" | "outcomes" | "feed" | "leaderboard";
+type TabId =
+  | "vote"
+  | "outcomes"
+  | "feed"
+  | "predictionWars"
+  | "leaderboard";
+
+const POLYMARKET_API_URL =
+  "https://conductor-labs-backend-production-7d02.up.railway.app/polymarket";
 
 type RankToast = { id: string; name: string; from: number; to: number };
 
@@ -499,6 +507,7 @@ export default function CompetitionPage() {
               ["vote", "Vote"],
               ["outcomes", "Outcomes"],
               ["feed", "Feed"],
+              ["predictionWars", "Prediction Wars"],
               ["leaderboard", "Leaderboard"],
             ] as const
           ).map(([id, label]) => (
@@ -506,7 +515,11 @@ export default function CompetitionPage() {
               key={id}
               type="button"
               onClick={() => setActiveTab(id)}
-              className={`flex-1 rounded-lg py-2 text-center text-xs font-medium transition-colors ${
+              className={`flex-1 rounded-lg py-2 text-center font-medium transition-colors ${
+                id === "predictionWars"
+                  ? "px-0.5 text-[10px] leading-tight sm:text-xs"
+                  : "text-xs"
+              } ${
                 activeTab === id
                   ? "bg-zinc-800 text-white"
                   : "text-zinc-500 hover:text-zinc-300"
@@ -537,10 +550,166 @@ export default function CompetitionPage() {
         )}
         {activeTab === "outcomes" && <OutcomesPanel data={data} />}
         {activeTab === "feed" && <FeedPanel data={data} />}
+        {activeTab === "predictionWars" && <PredictionWarsPanel />}
         {activeTab === "leaderboard" && (
           <LeaderboardPanel sortedAgents={sortedAgents} />
         )}
       </section>
+    </div>
+  );
+}
+
+type PolymarketMarketRow = {
+  id: string;
+  question: string;
+  yesOdds: number;
+  predictions: Partial<Record<AgentKey, string>>;
+};
+
+function normalizePolyPrediction(raw: unknown): string {
+  if (typeof raw !== "string") return "UNCERTAIN";
+  const u = raw.toUpperCase();
+  if (u === "YES" || u === "NO" || u === "UNCERTAIN") return u;
+  return "UNCERTAIN";
+}
+
+function predictionOutcomeBadgeClass(pred: string): string {
+  const p = pred.toUpperCase();
+  if (p === "YES")
+    return "bg-emerald-500/25 text-emerald-300 ring-1 ring-emerald-500/40";
+  if (p === "NO")
+    return "bg-red-500/20 text-red-300 ring-1 ring-red-500/35";
+  return "bg-zinc-700/80 text-zinc-400 ring-1 ring-zinc-600";
+}
+
+function PredictionWarsPanel() {
+  const [markets, setMarkets] = useState<PolymarketMarketRow[]>([]);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const fetchPolymarket = useCallback(async () => {
+    try {
+      const res = await fetch(POLYMARKET_API_URL, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json: unknown = await res.json();
+      if (!json || typeof json !== "object") throw new Error("Invalid JSON");
+      const o = json as Record<string, unknown>;
+      const rawMarkets = o.markets;
+      const rows: PolymarketMarketRow[] = [];
+      if (Array.isArray(rawMarkets)) {
+        for (const item of rawMarkets.slice(0, 5)) {
+          if (!item || typeof item !== "object") continue;
+          const m = item as Record<string, unknown>;
+          const id = m.id != null ? String(m.id) : "";
+          const question =
+            typeof m.question === "string" ? m.question : "";
+          const yesOdds =
+            typeof m.yesOdds === "number" && Number.isFinite(m.yesOdds)
+              ? Math.min(100, Math.max(0, m.yesOdds))
+              : 50;
+          const predsRaw = m.predictions;
+          const predictions: Partial<Record<AgentKey, string>> = {};
+          if (predsRaw && typeof predsRaw === "object" && predsRaw !== null) {
+            const pr = predsRaw as Record<string, unknown>;
+            for (const a of AGENTS) {
+              predictions[a.id] = normalizePolyPrediction(pr[a.id]);
+            }
+          }
+          rows.push({ id: id || question.slice(0, 12), question, yesOdds, predictions });
+        }
+      }
+      setMarkets(rows);
+      setUpdatedAt(
+        typeof o.updatedAt === "string" ? o.updatedAt : new Date().toISOString(),
+      );
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Fetch failed");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchPolymarket();
+    const id = window.setInterval(fetchPolymarket, 30_000);
+    return () => window.clearInterval(id);
+  }, [fetchPolymarket]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-zinc-200">
+          Prediction Wars
+        </h3>
+        {updatedAt && (
+          <span className="text-[10px] text-zinc-500 tabular-nums">
+            Updated {new Date(updatedAt).toLocaleTimeString()}
+          </span>
+        )}
+      </div>
+      {loading && markets.length === 0 && (
+        <p className="text-xs text-zinc-500">Loading Polymarket…</p>
+      )}
+      {error && (
+        <p className="text-xs text-red-400/90">
+          {error}
+        </p>
+      )}
+      <div className="space-y-3">
+        {markets.map((m) => (
+          <article
+            key={m.id}
+            className="rounded-xl border border-zinc-800/90 bg-[#111] p-3 shadow-sm"
+          >
+            <p className="text-sm font-medium leading-snug text-zinc-100">
+              {m.question || "—"}
+            </p>
+            <div className="mt-3">
+              <div className="mb-1 flex items-center justify-between text-[11px] text-zinc-400">
+                <span>YES odds</span>
+                <span className="font-semibold tabular-nums text-zinc-200">
+                  {m.yesOdds}%
+                </span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-zinc-800">
+                <div
+                  className="h-full rounded-full bg-emerald-500/90 transition-all duration-500"
+                  style={{ width: `${m.yesOdds}%` }}
+                />
+              </div>
+            </div>
+            <div className="mt-3 flex flex-col gap-2 border-t border-zinc-800/80 pt-3">
+              {AGENTS.map((agent) => {
+                const pred =
+                  m.predictions[agent.id] ?? "UNCERTAIN";
+                return (
+                  <div
+                    key={agent.id}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <span
+                      className="text-xs font-semibold"
+                      style={{ color: agent.color }}
+                    >
+                      {agent.name}
+                    </span>
+                    <span
+                      className={`rounded-md px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${predictionOutcomeBadgeClass(pred)}`}
+                    >
+                      {pred}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </article>
+        ))}
+      </div>
+      {!loading && markets.length === 0 && !error && (
+        <p className="text-xs text-zinc-500">No markets returned.</p>
+      )}
     </div>
   );
 }
