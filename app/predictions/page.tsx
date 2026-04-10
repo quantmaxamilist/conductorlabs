@@ -761,6 +761,14 @@ export default function PredictionsPage() {
             Powered by Polymarket data
           </p>
         </footer>
+
+        <div className="mx-auto mt-8 w-full max-w-3xl border-t border-zinc-800/80 bg-[#0d0d0d] px-3 pb-6 pt-2 text-[11px] text-zinc-500">
+          <div className="flex flex-wrap justify-between gap-2">
+            <span>1,204 decisions logged</span>
+            <span>Crowd 62% accurate</span>
+            <span className="tabular-nums">9,999 active voters</span>
+          </div>
+        </div>
       </div>
     </div>
   );
