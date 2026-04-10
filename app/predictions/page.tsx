@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
@@ -10,6 +11,7 @@ import {
 import { AuthButton, HeaderPointsPill } from "@/components/AuthButton";
 import { AuthModal } from "@/components/AuthModal";
 import { useAuth } from "@/components/auth-provider";
+import { supabase } from "@/lib/supabase";
 import { ConductorLogoMark } from "../components/conductor-logo-mark";
 import { LightningCanvas } from "../components/lightning-canvas";
 
@@ -283,7 +285,400 @@ function agentReasoningLine(
 
 const MAX_REASON = 140;
 
+type PredictionsTabId = "vote" | "outcomes" | "feed" | "leaderboard";
+
+function pickPolyString(row: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === "string" && v.trim() !== "") return v.trim();
+  }
+  return "—";
+}
+
+function timeAgoFromRow(row: Record<string, unknown>): string {
+  const keys = ["created_at", "updated_at", "resolved_at", "logged_at", "ts"];
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === "string") {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) {
+        const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+        if (sec < 45) return "just now";
+        const mins = Math.floor(sec / 60);
+        if (mins < 60) return `${mins}m ago`;
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 48) return `${hrs}h ago`;
+        return new Date(t).toLocaleDateString();
+      }
+    }
+    if (typeof v === "number" && Number.isFinite(v)) {
+      const ms = v > 1e12 ? v : v * 1000;
+      const sec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+      if (sec < 45) return "just now";
+      const mins = Math.floor(sec / 60);
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 48) return `${hrs}h ago`;
+      return new Date(ms).toLocaleDateString();
+    }
+  }
+  return "—";
+}
+
+function displayAgentName(raw: string): string {
+  if (!raw || raw === "—") return "—";
+  const lower = raw.toLowerCase();
+  const found = AGENTS.find((a) => a.id === lower);
+  if (found) return found.name;
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+function rowToRecord(row: unknown): Record<string, unknown> {
+  if (row && typeof row === "object") return row as Record<string, unknown>;
+  return {};
+}
+
+function PredictionsOutcomesPanel() {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setErr(null);
+    const { data, error } = await supabase
+      .from("polymarket_predictions")
+      .select("*")
+      .eq("resolved", true)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (error) {
+      setErr(error.message);
+      setRows([]);
+    } else {
+      setRows((data ?? []).map(rowToRecord));
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-zinc-200">Outcomes</h3>
+      <p className="text-[11px] leading-relaxed text-zinc-500">
+        Resolved markets from the archive.
+      </p>
+      {loading && rows.length === 0 ? (
+        <p className="text-xs text-zinc-500">Loading…</p>
+      ) : null}
+      {err && <p className="text-xs text-red-400/90">{err}</p>}
+      <ul className="max-h-[min(24rem,50vh)] space-y-2 overflow-y-auto text-xs text-zinc-400">
+        {rows.map((r, i) => {
+          const id = String(r.id ?? i);
+          const market = pickPolyString(r, [
+            "market_question",
+            "question",
+            "market",
+            "market_title",
+            "title",
+          ]);
+          const agentRaw = pickPolyString(r, [
+            "agent_id",
+            "agent",
+            "model",
+            "agent_name",
+          ]);
+          const prediction = pickPolyString(r, [
+            "prediction",
+            "pred",
+            "signal",
+          ]);
+          const outcome = pickPolyString(r, [
+            "outcome",
+            "result",
+            "resolution",
+            "actual",
+            "resolved_outcome",
+          ]);
+          const when = timeAgoFromRow(r);
+          return (
+            <li
+              key={id}
+              className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2.5 text-zinc-300"
+            >
+              <p className="font-medium text-zinc-100">{market}</p>
+              <p className="mt-1 text-[11px] text-zinc-400">
+                <span className="text-zinc-500">Agent</span>{" "}
+                {displayAgentName(agentRaw)}
+                <span className="mx-1.5 text-zinc-600">·</span>
+                <span className="text-zinc-500">Prediction</span> {prediction}
+                <span className="mx-1.5 text-zinc-600">·</span>
+                <span className="text-zinc-500">Outcome</span>{" "}
+                <span className="font-semibold text-emerald-400/90">
+                  {outcome}
+                </span>
+              </p>
+              <p className="mt-1 text-[10px] text-zinc-600">{when}</p>
+            </li>
+          );
+        })}
+      </ul>
+      {!loading && !err && rows.length === 0 ? (
+        <p className="text-xs text-zinc-500">No resolved predictions yet.</p>
+      ) : null}
+    </div>
+  );
+}
+
+function PredictionsFeedPanel() {
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setErr(null);
+    const { data, error } = await supabase
+      .from("polymarket_predictions")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(40);
+    if (error) {
+      setErr(error.message);
+      setRows([]);
+    } else {
+      setRows((data ?? []).map(rowToRecord));
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const id = window.setInterval(() => void load(), 30_000);
+    return () => window.clearInterval(id);
+  }, [load]);
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-zinc-200">Feed</h3>
+      <p className="text-[11px] leading-relaxed text-zinc-500">
+        Recent agent predictions across markets.
+      </p>
+      {loading && rows.length === 0 ? (
+        <p className="text-xs text-zinc-500">Loading…</p>
+      ) : null}
+      {err && <p className="text-xs text-red-400/90">{err}</p>}
+      <ul className="max-h-[min(24rem,50vh)] space-y-2 overflow-y-auto text-xs text-zinc-400">
+        {rows.map((r, i) => {
+          const id = String(r.id ?? i);
+          const market = pickPolyString(r, [
+            "market_question",
+            "question",
+            "market",
+            "market_title",
+            "title",
+          ]);
+          const agentRaw = pickPolyString(r, [
+            "agent_id",
+            "agent",
+            "model",
+            "agent_name",
+          ]);
+          const prediction = pickPolyString(r, [
+            "prediction",
+            "pred",
+            "signal",
+          ]);
+          const when = timeAgoFromRow(r);
+          return (
+            <li
+              key={id}
+              className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-zinc-300"
+            >
+              <span className="font-semibold text-zinc-200">
+                {displayAgentName(agentRaw)}
+              </span>
+              <span className="text-zinc-600"> · </span>
+              <span className="text-zinc-400">{market}</span>
+              <span className="text-zinc-600"> · </span>
+              <span className="font-medium text-zinc-100">{prediction}</span>
+              <span className="mt-1 block text-[10px] text-zinc-600">
+                {when}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {!loading && !err && rows.length === 0 ? (
+        <p className="text-xs text-zinc-500">No feed entries yet.</p>
+      ) : null}
+    </div>
+  );
+}
+
+type PredictorRow = {
+  id: string;
+  username: string;
+  points: number;
+  predictions_correct: number | null;
+  predictions_total: number | null;
+};
+
+function tierForPoints(points: number): {
+  label: string;
+  className: string;
+} {
+  if (points >= 10_000)
+    return {
+      label: "Elite",
+      className:
+        "border-amber-500/40 bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/25",
+    };
+  if (points >= 5000)
+    return {
+      label: "Gold",
+      className:
+        "border-yellow-500/35 bg-yellow-500/10 text-yellow-200 ring-1 ring-yellow-500/20",
+    };
+  if (points >= 1000)
+    return {
+      label: "Silver",
+      className:
+        "border-zinc-400/35 bg-zinc-500/15 text-zinc-200 ring-1 ring-zinc-400/20",
+    };
+  return {
+    label: "Bronze",
+    className:
+      "border-orange-700/40 bg-orange-950/50 text-orange-200/90 ring-1 ring-orange-800/30",
+  };
+}
+
+function formatAccuracyPct(correct: number | null, total: number | null): string {
+  const t = total ?? 0;
+  const c = correct ?? 0;
+  if (t <= 0) return "—";
+  return `${Math.round((c / t) * 100)}%`;
+}
+
+function PredictionsPredictorsLeaderboard() {
+  const { user, profile } = useAuth();
+  const [predictors, setPredictors] = useState<PredictorRow[]>([]);
+  const [predictorsError, setPredictorsError] = useState<string | null>(null);
+  const [predictorsLoading, setPredictorsLoading] = useState(true);
+
+  const fetchPredictors = useCallback(async () => {
+    setPredictorsError(null);
+    const { data, error } = await supabase
+      .from("profiles")
+      .select(
+        "id, username, points, predictions_correct, predictions_total",
+      )
+      .order("points", { ascending: false })
+      .limit(20);
+
+    if (error) {
+      setPredictorsError(error.message);
+      setPredictors([]);
+    } else {
+      const mapped = (data ?? []).map((r) => {
+        const o = r as Record<string, unknown>;
+        return {
+          id: String(o.id ?? ""),
+          username: String(o.username ?? ""),
+          points: Number(o.points ?? 0),
+          predictions_correct:
+            o.predictions_correct == null
+              ? null
+              : Number(o.predictions_correct),
+          predictions_total:
+            o.predictions_total == null ? null : Number(o.predictions_total),
+        } satisfies PredictorRow;
+      });
+      setPredictors(mapped);
+    }
+    setPredictorsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void fetchPredictors();
+    const id = window.setInterval(() => void fetchPredictors(), 30_000);
+    return () => window.clearInterval(id);
+  }, [fetchPredictors]);
+
+  const loggedIn = Boolean(user);
+  const zeroPointsLoggedIn = loggedIn && (profile?.points ?? 0) === 0;
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-zinc-200">Top predictors</h3>
+
+      {!loggedIn && (
+        <p className="rounded-lg border border-zinc-700/60 bg-zinc-900/30 px-3 py-2 text-xs text-zinc-400">
+          Login to see your ranking
+        </p>
+      )}
+      {loggedIn && zeroPointsLoggedIn && (
+        <p className="rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-2 text-xs text-violet-200/90">
+          You&apos;re not on the leaderboard yet — start voting to earn points
+        </p>
+      )}
+
+      {predictorsLoading && predictors.length === 0 ? (
+        <p className="text-xs text-zinc-500">Loading predictors…</p>
+      ) : null}
+      {predictorsError && (
+        <p className="text-xs text-red-400/90">{predictorsError}</p>
+      )}
+
+      <ul className="max-h-[min(24rem,50vh)] space-y-2 overflow-y-auto">
+        {predictors.map((row, i) => {
+          const tier = tierForPoints(row.points);
+          const isYou = Boolean(user?.id && row.id === user.id);
+          return (
+            <li
+              key={row.id}
+              className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2.5 ${
+                isYou
+                  ? "border-violet-500/35 bg-violet-500/[0.12]"
+                  : "border-zinc-800 bg-zinc-900/40"
+              }`}
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+                <span className="w-6 shrink-0 text-xs font-bold tabular-nums text-zinc-500">
+                  #{i + 1}
+                </span>
+                <span className="min-w-0 truncate text-sm font-medium text-zinc-200">
+                  {row.username}
+                </span>
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tier.className}`}
+                >
+                  {tier.label}
+                </span>
+              </div>
+              <div className="flex w-full shrink-0 items-center justify-between gap-3 pl-8 sm:ml-auto sm:w-auto sm:pl-0">
+                <span className="text-xs tabular-nums text-zinc-400">
+                  {formatAccuracyPct(
+                    row.predictions_correct,
+                    row.predictions_total,
+                  )}
+                </span>
+                <span className="text-sm font-semibold tabular-nums text-zinc-100">
+                  {row.points.toLocaleString()} pts
+                </span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 export default function PredictionsPage() {
+  const router = useRouter();
+  const [activeTab, setActiveTab] = useState<PredictionsTabId>("vote");
   const { awardVotePoints, user, refreshProfile } = useAuth();
   const [markets, setMarkets] = useState<PolymarketMarketRow[]>([]);
   const [sourceUpdatedAt, setSourceUpdatedAt] = useState<string | null>(null);
@@ -386,7 +781,7 @@ export default function PredictionsPage() {
       />
       <div className="pointer-events-none absolute inset-0 z-[1] bg-[linear-gradient(to_bottom,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[length:100%_64px] opacity-40" />
 
-      <div className="relative z-[1] mx-auto flex min-h-screen w-full max-w-3xl flex-col px-4 pb-16 pt-6 sm:px-6 md:px-8">
+      <div className="relative z-[1] mx-auto flex min-h-screen w-full max-w-3xl flex-col px-4 pb-28 pt-6 sm:px-6 md:px-8">
         <AuthModal
           open={authModalOpen}
           onClose={() => setAuthModalOpen(false)}
@@ -442,14 +837,14 @@ export default function PredictionsPage() {
         </header>
 
         <main className="flex flex-1 flex-col gap-6">
-          {loading && markets.length === 0 && (
+          {activeTab === "vote" && loading && markets.length === 0 && (
             <p className="text-sm text-zinc-500">Loading markets…</p>
           )}
-          {error && (
+          {activeTab === "vote" && error && (
             <p className="text-sm text-red-400/90">{error}</p>
           )}
 
-          {backedAgentId === null ? (
+          {activeTab === "vote" && backedAgentId === null ? (
             <section className="w-full">
               <h2 className="mb-4 text-center text-lg font-bold tracking-tight text-white sm:text-xl">
                 Pick your agent to get started
@@ -743,10 +1138,26 @@ export default function PredictionsPage() {
             );
           })}
 
-          {!loading && markets.length === 0 && !error && (
+          {activeTab === "vote" && !loading && markets.length === 0 && !error && (
             <p className="text-sm text-zinc-500">No markets available.</p>
           )}
             </>
+          )}
+
+          {activeTab === "outcomes" && (
+            <section className="flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
+              <PredictionsOutcomesPanel />
+            </section>
+          )}
+          {activeTab === "feed" && (
+            <section className="flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
+              <PredictionsFeedPanel />
+            </section>
+          )}
+          {activeTab === "leaderboard" && (
+            <section className="flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
+              <PredictionsPredictorsLeaderboard />
+            </section>
           )}
         </main>
 
@@ -762,13 +1173,49 @@ export default function PredictionsPage() {
           </p>
         </footer>
 
-        <div className="mx-auto mt-8 w-full max-w-3xl border-t border-zinc-800/80 bg-[#0d0d0d] px-3 pb-6 pt-2 text-[11px] text-zinc-500">
-          <div className="flex flex-wrap justify-between gap-2">
-            <span>1,204 decisions logged</span>
-            <span>Crowd 62% accurate</span>
-            <span className="tabular-nums">9,999 active voters</span>
+        <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-800 bg-[#0d0d0d]/95 backdrop-blur-md">
+          <div className="mx-auto flex max-w-lg justify-between gap-1 px-2 py-2">
+            {(
+              [
+                ["vote", "Vote"],
+                ["outcomes", "Outcomes"],
+                ["feed", "Feed"],
+                ["tradingWars", "Trading Wars"],
+                ["leaderboard", "Leaderboard"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => {
+                  if (id === "tradingWars") {
+                    router.push("/competition");
+                    return;
+                  }
+                  setActiveTab(id);
+                }}
+                className={`flex-1 rounded-lg py-2 text-center font-medium transition-colors ${
+                  id === "tradingWars"
+                    ? "px-0.5 text-[10px] leading-tight sm:text-xs"
+                    : "text-xs"
+                } ${
+                  id !== "tradingWars" && activeTab === id
+                    ? "bg-zinc-800 text-white"
+                    : "text-zinc-500 hover:text-zinc-300"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-        </div>
+          <div className="mx-auto max-w-lg border-t border-zinc-800/80 px-3 pb-3 pt-2 text-[11px] text-zinc-500">
+            <div className="flex flex-wrap justify-between gap-2">
+              <span>1,204 decisions logged</span>
+              <span>Crowd 62% accurate</span>
+              <span className="tabular-nums">9,999 active voters</span>
+            </div>
+          </div>
+        </nav>
       </div>
     </div>
   );
