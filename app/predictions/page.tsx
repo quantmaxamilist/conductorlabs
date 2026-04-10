@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { AuthButton, HeaderPointsPill } from "@/components/AuthButton";
+import { AuthModal } from "@/components/AuthModal";
 import { useAuth } from "@/components/auth-provider";
 import { ConductorLogoMark } from "../components/conductor-logo-mark";
 import { LightningCanvas } from "../components/lightning-canvas";
@@ -283,7 +284,7 @@ function agentReasoningLine(
 const MAX_REASON = 140;
 
 export default function PredictionsPage() {
-  const { awardVotePoints } = useAuth();
+  const { awardVotePoints, user, refreshProfile } = useAuth();
   const [markets, setMarkets] = useState<PolymarketMarketRow[]>([]);
   const [sourceUpdatedAt, setSourceUpdatedAt] = useState<string | null>(null);
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
@@ -291,9 +292,11 @@ export default function PredictionsPage() {
   const [loading, setLoading] = useState(true);
   const [crowd, setCrowd] = useState<Record<string, CrowdStrategyTally>>({});
   const [reasonDraft, setReasonDraft] = useState<Record<string, string>>({});
-  const [userSignal, setUserSignal] = useState<
-    Record<string, { strategy: Strategy; reasoning: string } | null>
+  const [strategyPick, setStrategyPick] = useState<
+    Record<string, Strategy | null>
   >({});
+  const [signalFlash, setSignalFlash] = useState<Record<string, boolean>>({});
+  const [authModalOpen, setAuthModalOpen] = useState(false);
   const [tick, setTick] = useState(0);
   const [backedAgentId, setBackedAgentId] = useState<AgentKey | null>(null);
 
@@ -346,38 +349,29 @@ export default function PredictionsPage() {
     return Math.max(0, Math.floor((Date.now() - lastFetchedAt) / 1000));
   }, [lastFetchedAt, tick]);
 
-  const selectStrategy = (
-    marketId: string,
-    strategy: Strategy,
-    yesOdds: number,
-    priorSignal: { strategy: Strategy; reasoning: string } | null | undefined,
-  ) => {
-    const raw = reasonDraft[marketId] ?? "";
-    const reasoning = raw.slice(0, MAX_REASON).trim();
+  const pickStrategy = (marketId: string, strategy: Strategy) => {
+    setStrategyPick((prev) => ({ ...prev, [marketId]: strategy }));
+  };
 
-    if (priorSignal?.strategy === strategy) {
-      setUserSignal((prev) => ({
-        ...prev,
-        [marketId]: { strategy, reasoning },
-      }));
+  const submitSignal = (marketId: string, yesOdds: number) => {
+    const pending = strategyPick[marketId];
+    if (pending == null) return;
+    if (!user) {
+      setAuthModalOpen(true);
       return;
     }
-
-    setUserSignal((prev) => ({
-      ...prev,
-      [marketId]: { strategy, reasoning },
-    }));
-
     setCrowd((prev) => {
       const cur = { ...(prev[marketId] ?? initialCrowdFromOdds(yesOdds)) };
-      const prior = priorSignal?.strategy;
-      if (prior && prior !== strategy) {
-        cur[prior] = Math.max(1, cur[prior] - 1);
-      }
-      cur[strategy] = cur[strategy] + 1;
+      cur[pending] = cur[pending] + 1;
       return { ...prev, [marketId]: cur };
     });
     void awardVotePoints();
+    setSignalFlash((f) => ({ ...f, [marketId]: true }));
+    window.setTimeout(() => {
+      setSignalFlash((f) => ({ ...f, [marketId]: false }));
+      setStrategyPick((p) => ({ ...p, [marketId]: null }));
+      setReasonDraft((p) => ({ ...p, [marketId]: "" }));
+    }, 3000);
   };
 
   return (
@@ -393,6 +387,11 @@ export default function PredictionsPage() {
       <div className="pointer-events-none absolute inset-0 z-[1] bg-[linear-gradient(to_bottom,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[length:100%_64px] opacity-40" />
 
       <div className="relative z-[1] mx-auto flex min-h-screen w-full max-w-3xl flex-col px-4 pb-16 pt-6 sm:px-6 md:px-8">
+        <AuthModal
+          open={authModalOpen}
+          onClose={() => setAuthModalOpen(false)}
+          onSuccess={() => void refreshProfile()}
+        />
         <header className="mb-8 border-b border-white/[0.06] pb-6">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <Link
@@ -504,11 +503,11 @@ export default function PredictionsPage() {
             const tally = crowd[m.id] ?? initialCrowdFromOdds(m.yesOdds);
             const pct = crowdPercents(tally);
             const closeLabel = formatMarketCloseLabel(m.endsAt, Date.now());
-            const signal = userSignal[m.id];
+            const pending = strategyPick[m.id];
             const draft = reasonDraft[m.id] ?? "";
             const draftLen = draft.length;
-            const pick = (s: Strategy) =>
-              selectStrategy(m.id, s, m.yesOdds, signal);
+            const pick = (s: Strategy) => pickStrategy(m.id, s);
+            const flashing = Boolean(signalFlash[m.id]);
 
             return (
               <article
@@ -614,7 +613,7 @@ export default function PredictionsPage() {
                       type="button"
                       onClick={() => pick("backYes")}
                       className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
-                        signal?.strategy === "backYes"
+                        pending === "backYes"
                           ? "border-emerald-400/70 bg-emerald-500/25 text-emerald-100 ring-2 ring-emerald-400/40"
                           : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
                       } px-4`}
@@ -625,7 +624,7 @@ export default function PredictionsPage() {
                       type="button"
                       onClick={() => pick("backNo")}
                       className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
-                        signal?.strategy === "backNo"
+                        pending === "backNo"
                           ? "border-red-400/70 bg-red-500/25 text-red-100 ring-2 ring-red-400/40"
                           : "border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
                       } px-4`}
@@ -636,7 +635,7 @@ export default function PredictionsPage() {
                       type="button"
                       onClick={() => pick("hedge")}
                       className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
-                        signal?.strategy === "hedge"
+                        pending === "hedge"
                           ? "border-amber-400/70 bg-amber-500/25 text-amber-100 ring-2 ring-amber-400/40"
                           : "border-amber-500/45 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20"
                       } px-4`}
@@ -647,7 +646,7 @@ export default function PredictionsPage() {
                       type="button"
                       onClick={() => pick("skip")}
                       className={`rounded-xl border py-3 text-left text-xs font-bold leading-snug transition-colors sm:text-sm ${
-                        signal?.strategy === "skip"
+                        pending === "skip"
                           ? "border-zinc-400/50 bg-zinc-600/35 text-zinc-100 ring-2 ring-zinc-500/40"
                           : "border-zinc-600/60 bg-zinc-800/80 text-zinc-300 hover:bg-zinc-700/80"
                       } px-4`}
@@ -683,26 +682,22 @@ export default function PredictionsPage() {
                     </div>
                   </div>
 
-                  {signal && (
-                    <div className="mt-5 rounded-xl border border-white/[0.08] bg-zinc-950/60 p-4">
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                        Your signal
-                      </p>
-                      <p className="mt-2 text-sm font-semibold text-white">
-                        {STRATEGY_META[signal.strategy].summary}
-                      </p>
-                      {signal.reasoning ? (
-                        <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-                          &ldquo;{signal.reasoning}&rdquo;
-                        </p>
-                      ) : (
-                        <p className="mt-2 text-xs italic text-zinc-600">
-                          No note added
-                        </p>
-                      )}
-                      <p className="mt-3 text-xs font-medium text-emerald-400/90">
-                        Signal sent to agents ✓
-                      </p>
+                  {pending != null && (
+                    <div className="mt-4">
+                      <button
+                        type="button"
+                        disabled={flashing}
+                        onClick={() => submitSignal(m.id, m.yesOdds)}
+                        className="w-full rounded-xl bg-white py-3 text-center text-sm font-semibold text-[#0a0a0a] transition-opacity hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {user ? "Submit signal →" : "Login to submit signal"}
+                      </button>
+                    </div>
+                  )}
+
+                  {flashing && (
+                    <div className="mt-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-center text-xs font-semibold text-emerald-300 sm:text-sm">
+                      Signal sent. Agent is executing.
                     </div>
                   )}
                 </div>

@@ -11,6 +11,7 @@ import {
   type SetStateAction,
 } from "react";
 import { AuthButton, HeaderPointsPill } from "@/components/AuthButton";
+import { AuthModal } from "@/components/AuthModal";
 import { useAuth } from "@/components/auth-provider";
 import { supabase } from "@/lib/supabase";
 import {
@@ -870,6 +871,9 @@ function GuideYourAgentPanel({
   setGuideDraftByAgent: Dispatch<SetStateAction<Record<AgentKey, string>>>;
   onStrategyVote?: () => void | Promise<void>;
 }) {
+  const { user, refreshProfile } = useAuth();
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [submitFlash, setSubmitFlash] = useState(false);
   const meta = AGENTS.find((a) => a.id === backedId)!;
   const guideCrowd = guideCrowdByAgent[backedId];
   const guidePick = guidePickByAgent[backedId];
@@ -878,22 +882,37 @@ function GuideYourAgentPanel({
   const thought = leaderNextThought(meta.name, btc5mPct, btcPrice);
 
   const pickStrategy = (s: GuideStrategy) => {
-    const prior = guidePickByAgent[backedId];
-    if (prior === s) return;
+    setGuidePickByAgent((p) => ({ ...p, [backedId]: s }));
+  };
+
+  const handleSubmitSignal = () => {
+    const pending = guidePickByAgent[backedId];
+    if (pending == null) return;
+    if (!user) {
+      setAuthModalOpen(true);
+      return;
+    }
     setGuideCrowdByAgent((prev) => {
       const cur = { ...prev[backedId] };
-      if (prior != null && prior !== s) {
-        cur[prior] = Math.max(1, cur[prior] - 1);
-      }
-      cur[s] = cur[s] + 1;
+      cur[pending] = cur[pending] + 1;
       return { ...prev, [backedId]: cur };
     });
-    setGuidePickByAgent((p) => ({ ...p, [backedId]: s }));
     void onStrategyVote?.();
+    setSubmitFlash(true);
+    window.setTimeout(() => {
+      setSubmitFlash(false);
+      setGuidePickByAgent((p) => ({ ...p, [backedId]: null }));
+      setGuideDraftByAgent((p) => ({ ...p, [backedId]: "" }));
+    }, 3000);
   };
 
   return (
     <section className="rounded-xl border border-zinc-800/90 bg-[#111] p-4 shadow-sm sm:p-5">
+      <AuthModal
+        open={authModalOpen}
+        onClose={() => setAuthModalOpen(false)}
+        onSuccess={() => void refreshProfile()}
+      />
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-800/80 pb-4">
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-200 sm:text-base">
@@ -990,6 +1009,25 @@ function GuideYourAgentPanel({
           {guideDraft.length} / {MAX_GUIDE_REASON}
         </div>
       </div>
+
+      {guidePick != null && (
+        <div className="mt-4">
+          <button
+            type="button"
+            disabled={submitFlash}
+            onClick={() => void handleSubmitSignal()}
+            className="w-full rounded-xl bg-white py-3 text-center text-sm font-semibold text-[#0a0a0a] transition-opacity hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {user ? "Submit signal →" : "Login to submit signal"}
+          </button>
+        </div>
+      )}
+
+      {submitFlash && (
+        <div className="mt-4 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-center text-xs font-semibold text-emerald-300 sm:text-sm">
+          Signal sent. Agent is executing.
+        </div>
+      )}
 
       <div className="mt-5">
         <p className="mb-2 text-center text-[10px] font-medium uppercase tracking-wide text-zinc-500">
