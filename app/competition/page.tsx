@@ -47,22 +47,10 @@ const GUIDE_STRATEGY_META: Record<
   GuideStrategy,
   { label: string; bar: string }
 > = {
-  long: {
-    label: "Enter long — buy the momentum",
-    bar: "Long",
-  },
-  wait: {
-    label: "Stay out — wait for better entry",
-    bar: "Wait",
-  },
-  short: {
-    label: "Go short — fade the move",
-    bar: "Short",
-  },
-  hold: {
-    label: "Hold current position",
-    bar: "Hold",
-  },
+  long: { label: "Enter long", bar: "Long" },
+  wait: { label: "Stay out", bar: "Wait" },
+  short: { label: "Go short", bar: "Short" },
+  hold: { label: "Hold position", bar: "Hold" },
 };
 
 /** Base book shown on cards; API `pnl` is added on top. */
@@ -284,8 +272,15 @@ function leaderNextThought(
   return `${leaderName} is balancing chop — flat 5m drift (${s}${pct5m.toFixed(1)}%) around ${px}.`;
 }
 
-function initialGuideCrowd(): Record<GuideStrategy, number> {
-  return { long: 28, wait: 22, short: 18, hold: 14 };
+function initialGuideCrowdForAgent(id: AgentKey): Record<GuideStrategy, number> {
+  const seed =
+    id.split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0) % 17;
+  return {
+    long: 22 + (seed % 14),
+    wait: 18 + ((seed * 3) % 12),
+    short: 16 + ((seed * 5) % 10),
+    hold: 12 + ((seed * 7) % 9),
+  };
 }
 
 function guideCrowdPercents(
@@ -318,9 +313,29 @@ export default function CompetitionPage() {
   const [backedId, setBackedId] = useState<AgentKey | null>(null);
   const [toasts, setToasts] = useState<RankToast[]>([]);
   const [priceTrail, setPriceTrail] = useState<{ t: number; p: number }[]>([]);
-  const [guideCrowd, setGuideCrowd] = useState(initialGuideCrowd);
-  const [guidePick, setGuidePick] = useState<GuideStrategy | null>(null);
-  const [guideDraft, setGuideDraft] = useState("");
+  const [guideCrowdByAgent, setGuideCrowdByAgent] = useState<
+    Record<AgentKey, Record<GuideStrategy, number>>
+  >(() => {
+    const init = {} as Record<AgentKey, Record<GuideStrategy, number>>;
+    for (const a of AGENTS) init[a.id] = initialGuideCrowdForAgent(a.id);
+    return init;
+  });
+  const [guidePickByAgent, setGuidePickByAgent] = useState<
+    Record<AgentKey, GuideStrategy | null>
+  >({
+    chatgpt: null,
+    claude: null,
+    gemini: null,
+    grok: null,
+  });
+  const [guideDraftByAgent, setGuideDraftByAgent] = useState<
+    Record<AgentKey, string>
+  >({
+    chatgpt: "",
+    claude: "",
+    gemini: "",
+    grok: "",
+  });
   const startPnlRef = useRef<Record<AgentKey, number> | null>(null);
   const prevRanksRef = useRef<Record<AgentKey, number> | null>(null);
   const lastRankToastAt = useRef<Partial<Record<AgentKey, number>>>({});
@@ -376,6 +391,14 @@ export default function CompetitionPage() {
       return { meta, api: a };
     }).sort((x, y) => y.api.pnl - x.api.pnl);
   }, [data.agents]);
+
+  const rankById = useMemo(() => {
+    const m = {} as Record<AgentKey, number>;
+    sortedAgents.forEach((row, i) => {
+      m[row.meta.id] = i + 1;
+    });
+    return m;
+  }, [sortedAgents]);
 
   useEffect(() => {
     if (!startPnlRef.current) {
@@ -457,6 +480,11 @@ export default function CompetitionPage() {
     setToasts((t) => t.filter((x) => x.id !== id));
   }, []);
 
+  const backedMeta = useMemo(
+    () => (backedId ? AGENTS.find((a) => a.id === backedId) : null),
+    [backedId],
+  );
+
   return (
     <div className="mx-auto flex min-h-screen max-w-lg flex-col px-3 pb-28 pt-3 sm:px-4">
       {/* Top bar */}
@@ -505,121 +533,216 @@ export default function CompetitionPage() {
         </p>
       </section>
 
-      {/* Agent grid — Part 1: current position */}
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {sortedAgents.map(({ meta, api }, idx) => {
-          const rank = idx + 1;
-          const start = startPnlRef.current?.[meta.id] ?? api.pnl;
-          const delta = api.pnl - start;
-          const bookTotal = totalBookGbp(meta.id, api.pnl);
-          const streakShow =
-            api.streak >= 3 && api.streakDir === "W"
-              ? `${api.streak}W+`
-              : api.streak >= 3 && api.streakDir === "L"
-                ? `${api.streak}L+`
-                : null;
-          return (
-            <article
-              key={meta.id}
-              className="relative flex flex-col gap-3 rounded-xl border border-zinc-800/90 bg-[#111] p-3 shadow-sm transition-shadow duration-300 sm:p-4"
-              style={
-                backedId === meta.id
-                  ? {
-                      boxShadow: `0 0 0 2px ${meta.color}, 0 0 0 4px #0d0d0d`,
-                    }
-                  : undefined
-              }
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-zinc-800 text-sm font-bold text-zinc-100">
-                    #{rank}
-                  </span>
-                  <div className="min-w-0">
-                    <h2
-                      className="truncate text-sm font-semibold sm:text-base"
-                      style={{ color: meta.color }}
-                    >
-                      {meta.name}
-                    </h2>
-                    <p className="text-[10px] text-zinc-500 sm:text-xs">
-                      Current position
-                    </p>
+      {backedId === null ? (
+        <section className="w-full">
+          <h2 className="mb-4 text-center text-lg font-bold tracking-tight text-white sm:text-xl">
+            Pick your agent to get started
+          </h2>
+          <div className="grid grid-cols-2 gap-3">
+            {sortedAgents.map(({ meta, api }) => {
+              const rank = rankById[meta.id];
+              return (
+                <button
+                  key={meta.id}
+                  type="button"
+                  onClick={() => setBackedId(meta.id)}
+                  className="flex flex-col gap-2 rounded-xl border border-zinc-800/90 bg-[#111] p-3 text-left shadow-sm transition-all hover:border-zinc-700 sm:p-4"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-zinc-800 text-xs font-bold text-zinc-100">
+                      #{rank}
+                    </span>
                   </div>
-                </div>
-                {streakShow && (
-                  <span
-                    className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white"
-                    style={{ backgroundColor: meta.color }}
+                  <h3
+                    className="text-sm font-bold leading-tight sm:text-base"
+                    style={{ color: meta.color }}
                   >
-                    {streakShow}
-                  </span>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-end gap-2">
-                <p
-                  className={`text-xl font-bold tabular-nums sm:text-2xl ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
-                >
-                  {formatGbp(bookTotal)}
-                </p>
-                <span
-                  className={`text-xs font-medium tabular-nums ${delta >= 0 ? "text-emerald-400/80" : "text-red-400/80"}`}
-                >
-                  {delta >= 0 ? "+" : ""}
-                  {formatGbp(delta)} vs start
-                </span>
-              </div>
-              <p
-                className={`text-xs font-semibold tabular-nums ${api.pnl >= 0 ? "text-emerald-400/90" : "text-red-400/90"}`}
-              >
-                Live P&amp;L {formatGbp(api.pnl)}
-              </p>
-
-              <div className="space-y-2 border-t border-zinc-800/80 pt-3 text-[11px] leading-relaxed text-zinc-400 sm:text-xs">
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-                    Strategy
-                  </p>
-                  <p className="mt-0.5 text-zinc-300">
+                    {meta.name}
+                  </h3>
+                  <p className="line-clamp-3 text-[10px] leading-snug text-zinc-500 sm:text-[11px]">
                     {AGENT_STRATEGY_BLURB[meta.id]}
                   </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-                    Last move
+                  <p
+                    className={`text-xs font-bold tabular-nums sm:text-sm ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                  >
+                    {formatGbp(api.pnl)} P&amp;L
                   </p>
-                  <p className="mt-0.5 text-zinc-200">
-                    {formatLastMoveLine(api, data.price)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-                    Market watch
-                  </p>
-                  <p className="mt-0.5 text-zinc-300">{marketConditionLine}</p>
-                </div>
-              </div>
-            </article>
-          );
-        })}
-      </section>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : (
+        <>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <span
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold text-white sm:text-sm"
+              style={{
+                borderColor: `${backedMeta?.color ?? "#fff"}66`,
+                backgroundColor: `${backedMeta?.color ?? "#333"}18`,
+              }}
+            >
+              Your agent:{" "}
+              <span style={{ color: backedMeta?.color }}>{backedMeta?.name}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setBackedId(null)}
+              className="text-xs font-medium text-zinc-400 underline decoration-zinc-600 underline-offset-2 hover:text-zinc-200"
+            >
+              Change
+            </button>
+          </div>
 
-      {/* Part 2: guide next move (60s cadence) */}
-      <GuideNextMovePanel
-        secondsLeft={secondsLeft}
-        urgent={urgent}
-        leader={sortedAgents[0]}
-        btc5mPct={btc5mPct}
-        btcPrice={data.price}
-        guideFlash={guideSignalFlash}
-        guideCrowd={guideCrowd}
-        setGuideCrowd={setGuideCrowd}
-        guidePick={guidePick}
-        setGuidePick={setGuidePick}
-        guideDraft={guideDraft}
-        setGuideDraft={setGuideDraft}
-      />
+          {(() => {
+            const row = sortedAgents.find((r) => r.meta.id === backedId);
+            if (!row) return null;
+            const { meta, api } = row;
+            const rank = rankById[meta.id];
+            const start = startPnlRef.current?.[meta.id] ?? api.pnl;
+            const delta = api.pnl - start;
+            const bookTotal = totalBookGbp(meta.id, api.pnl);
+            const streakShow =
+              api.streak >= 3 && api.streakDir === "W"
+                ? `${api.streak}W+`
+                : api.streak >= 3 && api.streakDir === "L"
+                  ? `${api.streak}L+`
+                  : null;
+            return (
+              <>
+                <article
+                  className="relative mb-5 flex flex-col gap-4 rounded-2xl border border-zinc-800/90 bg-[#111] p-4 shadow-md sm:p-6"
+                  style={{
+                    boxShadow: `0 0 0 2px ${meta.color}55, 0 8px 40px -12px rgba(0,0,0,0.6)`,
+                  }}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-zinc-800 text-base font-bold text-zinc-100 sm:h-12 sm:w-12 sm:text-lg">
+                        #{rank}
+                      </span>
+                      <div className="min-w-0">
+                        <h2
+                          className="truncate text-xl font-bold sm:text-2xl"
+                          style={{ color: meta.color }}
+                        >
+                          {meta.name}
+                        </h2>
+                        <p className="text-xs text-zinc-500 sm:text-sm">
+                          Your battle position
+                        </p>
+                      </div>
+                    </div>
+                    {streakShow && (
+                      <span
+                        className="rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-white"
+                        style={{ backgroundColor: meta.color }}
+                      >
+                        {streakShow}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <p
+                      className={`text-3xl font-bold tabular-nums sm:text-4xl ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                    >
+                      {formatGbp(bookTotal)}
+                    </p>
+                    <span
+                      className={`text-sm font-semibold tabular-nums ${delta >= 0 ? "text-emerald-400/85" : "text-red-400/85"}`}
+                    >
+                      {delta >= 0 ? "+" : ""}
+                      {formatGbp(delta)} vs start
+                    </span>
+                  </div>
+                  <p
+                    className={`text-sm font-bold tabular-nums ${api.pnl >= 0 ? "text-emerald-400/95" : "text-red-400/95"}`}
+                  >
+                    Live P&amp;L {formatGbp(api.pnl)}
+                  </p>
+
+                  <div className="space-y-3 border-t border-zinc-800/80 pt-4 text-sm leading-relaxed text-zinc-400">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                        Strategy
+                      </p>
+                      <p className="mt-1 text-zinc-200">
+                        {AGENT_STRATEGY_BLURB[meta.id]}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                        Last move
+                      </p>
+                      <p className="mt-1 text-base text-zinc-100">
+                        {formatLastMoveLine(api, data.price)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                        Market watch
+                      </p>
+                      <p className="mt-1 text-zinc-300">{marketConditionLine}</p>
+                    </div>
+                  </div>
+                </article>
+
+                <GuideYourAgentPanel
+                  backedId={backedId}
+                  secondsLeft={secondsLeft}
+                  urgent={urgent}
+                  btc5mPct={btc5mPct}
+                  btcPrice={data.price}
+                  guideFlash={guideSignalFlash}
+                  guideCrowdByAgent={guideCrowdByAgent}
+                  setGuideCrowdByAgent={setGuideCrowdByAgent}
+                  guidePickByAgent={guidePickByAgent}
+                  setGuidePickByAgent={setGuidePickByAgent}
+                  guideDraftByAgent={guideDraftByAgent}
+                  setGuideDraftByAgent={setGuideDraftByAgent}
+                />
+
+                <section className="mt-5">
+                  <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                    Competition
+                  </h3>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {sortedAgents
+                      .filter((r) => r.meta.id !== backedId)
+                      .map(({ meta, api }) => (
+                        <article
+                          key={meta.id}
+                          className="rounded-lg border border-zinc-800/80 bg-zinc-950/50 px-3 py-2.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-bold text-zinc-500">
+                              #{rankById[meta.id]}
+                            </span>
+                            <span
+                              className="truncate text-xs font-bold"
+                              style={{ color: meta.color }}
+                            >
+                              {meta.name}
+                            </span>
+                          </div>
+                          <p
+                            className={`mt-1 text-sm font-bold tabular-nums ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                          >
+                            {formatGbp(api.pnl)}
+                          </p>
+                          <p className="mt-1 line-clamp-2 text-[10px] leading-snug text-zinc-500">
+                            {formatLastMoveLine(api, data.price)}
+                          </p>
+                        </article>
+                      ))}
+                  </div>
+                </section>
+              </>
+            );
+          })()}
+        </>
+      )}
 
       {/* Rank toasts */}
       <div className="pointer-events-none fixed bottom-24 left-3 z-50 flex max-w-[min(100%,20rem)] flex-col gap-2 sm:left-6">
@@ -689,12 +812,7 @@ export default function CompetitionPage() {
 
       {/* Tab content (scrolls above fixed nav) */}
       <section className="mt-6 flex-1 space-y-4 rounded-xl border border-zinc-800 bg-[#111] p-4">
-        {activeTab === "vote" && (
-          <VotePanel
-            backedId={backedId}
-            setBackedId={setBackedId}
-          />
-        )}
+        {activeTab === "vote" && <VotePanel btc5mPct={btc5mPct} />}
         {activeTab === "outcomes" && <OutcomesPanel data={data} />}
         {activeTab === "feed" && <FeedPanel data={data} />}
         {activeTab === "leaderboard" && (
@@ -707,62 +825,67 @@ export default function CompetitionPage() {
 
 const MAX_GUIDE_REASON = 140;
 
-function GuideNextMovePanel({
+function GuideYourAgentPanel({
+  backedId,
   secondsLeft,
   urgent,
-  leader,
   btc5mPct,
   btcPrice,
   guideFlash,
-  guideCrowd,
-  setGuideCrowd,
-  guidePick,
-  setGuidePick,
-  guideDraft,
-  setGuideDraft,
+  guideCrowdByAgent,
+  setGuideCrowdByAgent,
+  guidePickByAgent,
+  setGuidePickByAgent,
+  guideDraftByAgent,
+  setGuideDraftByAgent,
 }: {
+  backedId: AgentKey;
   secondsLeft: number;
   urgent: boolean;
-  leader: { meta: (typeof AGENTS)[number]; api: AgentApiState };
   btc5mPct: number;
   btcPrice: number;
   guideFlash: boolean;
-  guideCrowd: Record<GuideStrategy, number>;
-  setGuideCrowd: Dispatch<SetStateAction<Record<GuideStrategy, number>>>;
-  guidePick: GuideStrategy | null;
-  setGuidePick: Dispatch<SetStateAction<GuideStrategy | null>>;
-  guideDraft: string;
-  setGuideDraft: Dispatch<SetStateAction<string>>;
+  guideCrowdByAgent: Record<AgentKey, Record<GuideStrategy, number>>;
+  setGuideCrowdByAgent: Dispatch<
+    SetStateAction<Record<AgentKey, Record<GuideStrategy, number>>>
+  >;
+  guidePickByAgent: Record<AgentKey, GuideStrategy | null>;
+  setGuidePickByAgent: Dispatch<
+    SetStateAction<Record<AgentKey, GuideStrategy | null>>
+  >;
+  guideDraftByAgent: Record<AgentKey, string>;
+  setGuideDraftByAgent: Dispatch<SetStateAction<Record<AgentKey, string>>>;
 }) {
+  const meta = AGENTS.find((a) => a.id === backedId)!;
+  const guideCrowd = guideCrowdByAgent[backedId];
+  const guidePick = guidePickByAgent[backedId];
+  const guideDraft = guideDraftByAgent[backedId] ?? "";
   const pct = guideCrowdPercents(guideCrowd);
-  const thought = leaderNextThought(leader.meta.name, btc5mPct, btcPrice);
+  const thought = leaderNextThought(meta.name, btc5mPct, btcPrice);
 
   const pickStrategy = (s: GuideStrategy) => {
-    if (guidePick === s) return;
-    setGuideCrowd((prev) => {
-      const next = { ...prev };
-      if (guidePick != null) {
-        next[guidePick] = Math.max(1, next[guidePick] - 1);
+    const prior = guidePickByAgent[backedId];
+    if (prior === s) return;
+    setGuideCrowdByAgent((prev) => {
+      const cur = { ...prev[backedId] };
+      if (prior != null && prior !== s) {
+        cur[prior] = Math.max(1, cur[prior] - 1);
       }
-      next[s] = next[s] + 1;
-      return next;
+      cur[s] = cur[s] + 1;
+      return { ...prev, [backedId]: cur };
     });
-    setGuidePick(s);
+    setGuidePickByAgent((p) => ({ ...p, [backedId]: s }));
   };
 
   return (
-    <section className="mt-5 rounded-xl border border-zinc-800/90 bg-[#111] p-4 shadow-sm sm:p-5">
+    <section className="rounded-xl border border-zinc-800/90 bg-[#111] p-4 shadow-sm sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-800/80 pb-4">
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-bold uppercase tracking-wide text-zinc-200 sm:text-base">
-            Guide the next move
+            Guide your agent&apos;s next move
           </h3>
           <p className="mt-2 text-xs leading-relaxed text-zinc-400 sm:text-sm">
-            <span className="font-semibold text-zinc-200">
-              Leading:{" "}
-              <span style={{ color: leader.meta.color }}>{leader.meta.name}</span>
-            </span>{" "}
-            — {thought}
+            {thought}
           </p>
         </div>
         <div className="shrink-0 text-right">
@@ -780,7 +903,7 @@ function GuideNextMovePanel({
 
       {guideFlash && (
         <div className="mt-4 animate-pulse rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-center text-xs font-semibold text-emerald-300 sm:text-sm">
-          Signal sent. Agents are executing.
+          Signal sent. Agent is executing.
         </div>
       )}
 
@@ -832,17 +955,20 @@ function GuideNextMovePanel({
       </div>
 
       <div className="mt-4">
-        <label htmlFor="guide-agent-reason" className="sr-only">
-          Tell the agents why
+        <label htmlFor={`guide-reason-${backedId}`} className="sr-only">
+          Tell your agent why
         </label>
         <textarea
-          id="guide-agent-reason"
+          id={`guide-reason-${backedId}`}
           rows={2}
           maxLength={MAX_GUIDE_REASON}
-          placeholder="Tell the agents why (e.g. 'Fed meeting tomorrow could cause volatility')"
+          placeholder="Tell your agent why..."
           value={guideDraft}
           onChange={(e) =>
-            setGuideDraft(e.target.value.slice(0, MAX_GUIDE_REASON))
+            setGuideDraftByAgent((prev) => ({
+              ...prev,
+              [backedId]: e.target.value.slice(0, MAX_GUIDE_REASON),
+            }))
           }
           className="w-full resize-none rounded-xl border border-zinc-700/80 bg-zinc-950/80 px-3 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500/40"
         />
@@ -853,7 +979,7 @@ function GuideNextMovePanel({
 
       <div className="mt-5">
         <p className="mb-2 text-center text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-          Crowd strategies
+          Backers of {meta.name}
         </p>
         <div className="mb-1.5 grid grid-cols-4 gap-0.5 text-[8px] font-semibold tabular-nums leading-tight sm:gap-1 sm:text-[10px]">
           <span className="text-center text-emerald-400/90">
@@ -892,25 +1018,20 @@ function GuideNextMovePanel({
   );
 }
 
-function VotePanel({
-  backedId,
-  setBackedId,
-}: {
-  backedId: AgentKey | null;
-  setBackedId: (id: AgentKey | null) => void;
-}) {
+function VotePanel({ btc5mPct }: { btc5mPct: number }) {
+  const pctStr = `${btc5mPct >= 0 ? "+" : ""}${btc5mPct.toFixed(1)}`;
   const questions = [
     {
-      q: "Next 60s — BTC bias?",
-      options: ["Pushes higher", "Chops sideways", "Flush lower"],
+      q: `BTC moved ${pctStr}% in the last 5 mins — breakout or fakeout?`,
+      options: ["Real breakout", "Fakeout", "Too early to tell"],
     },
     {
-      q: "Which agent is most risk-on?",
-      options: ["ChatGPT", "Claude", "Gemini / Grok tie"],
+      q: "Should your agent increase exposure this round?",
+      options: ["Yes go bigger", "Stay the same", "Reduce risk"],
     },
     {
-      q: "Crowd call: volatility this round?",
-      options: ["Expands", "Compresses", "Spikes then mean reverts"],
+      q: "What's your read on the next 60 seconds?",
+      options: ["Bullish", "Neutral", "Bearish"],
     },
   ];
 
@@ -922,10 +1043,12 @@ function VotePanel({
 
   return (
     <div className="space-y-5">
-      <h3 className="text-sm font-semibold text-zinc-200">Crowd questions</h3>
+      <h3 className="text-sm font-semibold text-zinc-200">Crowd pulse</h3>
       {questions.map((item, qi) => (
         <div key={item.q} className="space-y-2">
-          <p className="text-xs font-medium text-zinc-400">{item.q}</p>
+          <p className="text-xs font-medium leading-relaxed text-zinc-400">
+            {item.q}
+          </p>
           <div className="flex flex-col gap-2">
             {item.options.map((opt, oi) => {
               const selected = picks[qi] === oi;
@@ -953,38 +1076,6 @@ function VotePanel({
           </div>
         </div>
       ))}
-
-      <div>
-        <p className="mb-2 text-xs font-medium text-zinc-400">Back a runner</p>
-        <div className="grid grid-cols-2 gap-2">
-          {AGENTS.map((a) => {
-            const on = backedId === a.id;
-            return (
-              <button
-                key={a.id}
-                type="button"
-                onClick={() => setBackedId(on ? null : a.id)}
-                className={`rounded-lg border-2 px-3 py-2.5 text-sm font-semibold transition-all ${
-                  on
-                    ? "text-white"
-                    : "border-zinc-800 bg-zinc-900/40 text-zinc-400 hover:border-zinc-600"
-                }`}
-                style={
-                  on
-                    ? {
-                        borderColor: a.color,
-                        backgroundColor: `${a.color}22`,
-                        boxShadow: `0 0 0 1px ${a.color}55`,
-                      }
-                    : undefined
-                }
-              >
-                Back {a.name}
-              </button>
-            );
-          })}
-        </div>
-      </div>
     </div>
   );
 }
