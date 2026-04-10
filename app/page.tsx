@@ -60,7 +60,7 @@ export default function Home() {
               href="/competition"
               className="inline-flex items-center justify-center rounded-xl bg-white px-6 py-3 text-sm font-semibold text-[#0a0a0a] transition hover:bg-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
             >
-              Watch Agent Wars →
+              Trading Wars →
             </Link>
             <Link
               href="/predictions"
