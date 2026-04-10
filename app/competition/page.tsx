@@ -61,7 +61,14 @@ const STARTING_POOL_GBP: Record<AgentKey, number> = {
   grok: 116_900,
 };
 
-const ROUND_SEC = 60;
+/** Round / decision countdown length (seconds). */
+const TOTAL_ROUND_SECONDS = 300;
+
+function formatCountdownMSS(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 type TabId = "vote" | "outcomes" | "feed" | "leaderboard";
 
@@ -306,7 +313,7 @@ export default function CompetitionPage() {
   const router = useRouter();
   const { data } = useCompetitionState();
   const [watchers, setWatchers] = useState(18420);
-  const [secondsLeft, setSecondsLeft] = useState(ROUND_SEC);
+  const [secondsLeft, setSecondsLeft] = useState(TOTAL_ROUND_SECONDS);
   const [roundPulse, setRoundPulse] = useState(false);
   const [guideSignalFlash, setGuideSignalFlash] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>("vote");
@@ -353,15 +360,11 @@ export default function CompetitionPage() {
 
   useEffect(() => {
     const prev = prevSecondsRef.current;
-    let tid: number | undefined;
-    if (prev === 1 && secondsLeft === ROUND_SEC) {
+    if (prev === 1 && secondsLeft === TOTAL_ROUND_SECONDS) {
       setGuideSignalFlash(true);
-      tid = window.setTimeout(() => setGuideSignalFlash(false), 2600);
+      window.setTimeout(() => setGuideSignalFlash(false), 2500);
     }
     prevSecondsRef.current = secondsLeft;
-    return () => {
-      if (tid !== undefined) window.clearTimeout(tid);
-    };
   }, [secondsLeft]);
 
   useEffect(() => {
@@ -377,7 +380,7 @@ export default function CompetitionPage() {
         if (s <= 1) {
           setRoundPulse(true);
           window.setTimeout(() => setRoundPulse(false), 600);
-          return ROUND_SEC;
+          return TOTAL_ROUND_SECONDS;
         }
         return s - 1;
       });
@@ -442,7 +445,7 @@ export default function CompetitionPage() {
     });
   }, [sortedAgents]);
 
-  const progress = (secondsLeft / ROUND_SEC) * 100;
+  const progress = (secondsLeft / TOTAL_ROUND_SECONDS) * 100;
   const urgent = secondsLeft <= 10;
 
   const btc5mPct = useMemo(() => {
@@ -519,7 +522,7 @@ export default function CompetitionPage() {
           <span
             className={`tabular-nums font-mono text-lg font-semibold ${urgent ? "text-red-400" : "text-zinc-100"}`}
           >
-            0:{secondsLeft.toString().padStart(2, "0")}
+            {formatCountdownMSS(secondsLeft)}
           </span>
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-zinc-800">
@@ -529,7 +532,7 @@ export default function CompetitionPage() {
           />
         </div>
         <p className="mt-2 text-xs text-zinc-500">
-          Positions settle every 60s. Rankings reshuffle on live P&amp;L.
+          Positions settle every 5 mins. Rankings reshuffle on live P&amp;L.
         </p>
       </section>
 
@@ -541,6 +544,7 @@ export default function CompetitionPage() {
           <div className="grid grid-cols-2 gap-3">
             {sortedAgents.map(({ meta, api }) => {
               const rank = rankById[meta.id];
+              const bookTotal = totalBookGbp(meta.id, api.pnl);
               return (
                 <button
                   key={meta.id}
@@ -565,7 +569,7 @@ export default function CompetitionPage() {
                   <p
                     className={`text-xs font-bold tabular-nums sm:text-sm ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
                   >
-                    {formatGbp(api.pnl)} P&amp;L
+                    {formatGbp(bookTotal)} book
                   </p>
                 </button>
               );
@@ -895,8 +899,7 @@ function GuideYourAgentPanel({
           <p
             className={`mt-0.5 font-mono text-xl font-bold tabular-nums sm:text-2xl ${urgent ? "text-red-400" : "text-zinc-100"}`}
           >
-            {secondsLeft}
-            <span className="text-sm font-medium text-zinc-500">s</span>
+            {formatCountdownMSS(secondsLeft)}
           </p>
         </div>
       </div>
@@ -1030,7 +1033,7 @@ function VotePanel({ btc5mPct }: { btc5mPct: number }) {
       options: ["Yes go bigger", "Stay the same", "Reduce risk"],
     },
     {
-      q: "What's your read on the next 60 seconds?",
+      q: "What's your read on the next 5 minutes?",
       options: ["Bullish", "Neutral", "Bearish"],
     },
   ];
