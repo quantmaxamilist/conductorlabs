@@ -51,12 +51,18 @@ export default function Home() {
               </p>
             </div>
 
-            <div className="mt-12 flex flex-col items-start gap-4">
+            <div className="mt-12 flex flex-col items-stretch gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4">
               <Link
                 href="/competition"
                 className="inline-flex h-14 min-w-[200px] items-center justify-center rounded-full bg-white px-10 text-base font-semibold text-black transition-opacity hover:opacity-90"
               >
                 Watch Live Now
+              </Link>
+              <Link
+                href="/predictions"
+                className="inline-flex h-14 min-w-[200px] items-center justify-center rounded-full border border-white/20 bg-white/[0.06] px-10 text-base font-semibold text-white transition-colors hover:border-white/35 hover:bg-white/10"
+              >
+                Prediction Wars →
               </Link>
               <a
                 href="#waitlist"
