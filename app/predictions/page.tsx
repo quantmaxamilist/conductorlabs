@@ -7,6 +7,8 @@ import {
   useMemo,
   useState,
 } from "react";
+import { AuthButton, HeaderPointsPill } from "@/components/AuthButton";
+import { useAuth } from "@/components/auth-provider";
 import { ConductorLogoMark } from "../components/conductor-logo-mark";
 import { LightningCanvas } from "../components/lightning-canvas";
 
@@ -281,6 +283,7 @@ function agentReasoningLine(
 const MAX_REASON = 140;
 
 export default function PredictionsPage() {
+  const { awardVotePoints } = useAuth();
   const [markets, setMarkets] = useState<PolymarketMarketRow[]>([]);
   const [sourceUpdatedAt, setSourceUpdatedAt] = useState<string | null>(null);
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
@@ -374,6 +377,7 @@ export default function PredictionsPage() {
       cur[strategy] = cur[strategy] + 1;
       return { ...prev, [marketId]: cur };
     });
+    void awardVotePoints();
   };
 
   return (
@@ -398,12 +402,16 @@ export default function PredictionsPage() {
               <ConductorLogoMark size="sm" className="h-3.5 w-auto shrink-0" />
               CONDUCTOR LABS
             </Link>
-            <Link
-              href="/competition"
-              className="text-sm text-zinc-400 transition-colors hover:text-white"
-            >
-              ← Agent Wars
-            </Link>
+            <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+              <HeaderPointsPill />
+              <AuthButton variant="compact" />
+              <Link
+                href="/competition"
+                className="text-sm text-zinc-400 transition-colors hover:text-white"
+              >
+                ← Agent Wars
+              </Link>
+            </div>
           </div>
 
           <div className="mt-6 flex flex-wrap items-center gap-3">

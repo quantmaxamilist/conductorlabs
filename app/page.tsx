@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ConductorLogoMark } from "./components/conductor-logo-mark";
+import { HeroAuthCta } from "./components/hero-auth-cta";
 import { LightningCanvas } from "./components/lightning-canvas";
 
 const howSteps = [
@@ -69,6 +70,8 @@ export default function Home() {
               Prediction Wars →
             </Link>
           </div>
+
+          <HeroAuthCta />
         </section>
 
         {/* How it works */}

@@ -10,6 +10,8 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react";
+import { AuthButton, HeaderPointsPill } from "@/components/AuthButton";
+import { useAuth } from "@/components/auth-provider";
 import {
   type AgentKey,
   type AgentApiState,
@@ -312,6 +314,7 @@ function guideCrowdPercents(
 export default function CompetitionPage() {
   const router = useRouter();
   const { data } = useCompetitionState();
+  const { awardVotePoints } = useAuth();
   const [watchers, setWatchers] = useState(18420);
   const [secondsLeft, setSecondsLeft] = useState(TOTAL_SECONDS);
   const [roundPulse, setRoundPulse] = useState(false);
@@ -491,26 +494,29 @@ export default function CompetitionPage() {
   return (
     <div className="mx-auto flex min-h-screen max-w-lg flex-col px-3 pb-28 pt-3 sm:px-4">
       {/* Top bar */}
-      <header className="mb-4 flex flex-wrap items-center gap-2 border-b border-zinc-800/80 pb-3">
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-red-400 ring-1 ring-red-500/40">
-          <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-red-500/15 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-red-400 ring-1 ring-red-500/40">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+            </span>
+            Live
           </span>
-          Live
-        </span>
-        <span className="rounded-md bg-zinc-800/80 px-2 py-1 text-xs text-zinc-300">
-          Day 3 of 7
-        </span>
-        <span className="rounded-md bg-zinc-800/80 px-2 py-1 text-xs tabular-nums text-zinc-300">
-          {watchers.toLocaleString()} watching
-        </span>
-        <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-300 ring-1 ring-amber-500/25">
-          BTC {formatBtc(data.price)}
-        </span>
-        <span className="rounded-md bg-violet-500/15 px-2 py-1 text-xs font-semibold text-violet-300 ring-1 ring-violet-500/30">
-          12,400 pts
-        </span>
+          <span className="rounded-md bg-zinc-800/80 px-2 py-1 text-xs text-zinc-300">
+            Day 3 of 7
+          </span>
+          <span className="rounded-md bg-zinc-800/80 px-2 py-1 text-xs tabular-nums text-zinc-300">
+            {watchers.toLocaleString()} watching
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-300 ring-1 ring-amber-500/25">
+            BTC {formatBtc(data.price)}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <AuthButton variant="compact" />
+          <HeaderPointsPill />
+        </div>
       </header>
 
       {/* Round timer */}
@@ -705,6 +711,7 @@ export default function CompetitionPage() {
                   setGuidePickByAgent={setGuidePickByAgent}
                   guideDraftByAgent={guideDraftByAgent}
                   setGuideDraftByAgent={setGuideDraftByAgent}
+                  onStrategyVote={awardVotePoints}
                 />
 
                 <section className="mt-5">
@@ -842,6 +849,7 @@ function GuideYourAgentPanel({
   setGuidePickByAgent,
   guideDraftByAgent,
   setGuideDraftByAgent,
+  onStrategyVote,
 }: {
   backedId: AgentKey;
   secondsLeft: number;
@@ -859,6 +867,7 @@ function GuideYourAgentPanel({
   >;
   guideDraftByAgent: Record<AgentKey, string>;
   setGuideDraftByAgent: Dispatch<SetStateAction<Record<AgentKey, string>>>;
+  onStrategyVote?: () => void | Promise<void>;
 }) {
   const meta = AGENTS.find((a) => a.id === backedId)!;
   const guideCrowd = guideCrowdByAgent[backedId];
@@ -879,6 +888,7 @@ function GuideYourAgentPanel({
       return { ...prev, [backedId]: cur };
     });
     setGuidePickByAgent((p) => ({ ...p, [backedId]: s }));
+    void onStrategyVote?.();
   };
 
   return (
