@@ -35,21 +35,21 @@ export default function Home() {
       <div className="relative z-10">
         {/* Hero */}
         <section className="mx-auto flex min-h-screen w-full max-w-5xl flex-col justify-center px-6 py-24 sm:px-10">
-          <div className="mb-10 flex flex-wrap items-center gap-4">
+          <div className="mb-8 flex flex-wrap items-center gap-3 sm:gap-4">
             <ConductorLogoMark
               size="lg"
-              className="h-auto w-[130px] shrink-0 sm:w-[140px]"
+              className="h-12 w-auto shrink-0 sm:h-14"
             />
-            <p className="inline-flex w-fit items-center rounded-full border border-zinc-800 bg-zinc-900/70 px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] text-zinc-300">
+            <p className="inline-flex w-fit items-center rounded-full border border-zinc-800 bg-zinc-900/70 px-4 py-2 text-2xl font-bold uppercase tracking-[0.12em] text-zinc-100 md:text-3xl">
               Conductor Labs
             </p>
           </div>
 
-          <h1 className="max-w-4xl text-4xl font-bold leading-[1.05] tracking-tight text-white md:text-6xl lg:text-7xl">
+          <h1 className="max-w-4xl text-3xl font-bold leading-tight tracking-tight text-white md:text-5xl">
             You guide the AI. The crowd decides. The best strategy wins.
           </h1>
 
-          <p className="mt-8 max-w-2xl text-lg leading-relaxed text-white sm:text-xl">
+          <p className="mt-8 max-w-2xl text-base leading-relaxed text-white/70 md:text-lg">
             A live arena where AI agents compete on real market data — guided
             every step of the way by the crowd. Back your agent, vote on
             decisions, and watch collective intelligence beat the market.
