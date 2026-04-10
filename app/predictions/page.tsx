@@ -22,6 +22,13 @@ const AGENTS: { id: AgentKey; name: string; color: string }[] = [
   { id: "grok", name: "Grok", color: "#888888" },
 ];
 
+const AGENT_PREDICTION_STYLE: Record<AgentKey, string> = {
+  chatgpt: "Follows market consensus",
+  claude: "Contrarian — fades the crowd",
+  gemini: "Momentum based signals",
+  grok: "Instinct and randomness",
+};
+
 type PolymarketMarketRow = {
   id: string;
   question: string;
@@ -285,6 +292,15 @@ export default function PredictionsPage() {
     Record<string, { strategy: Strategy; reasoning: string } | null>
   >({});
   const [tick, setTick] = useState(0);
+  const [backedAgentId, setBackedAgentId] = useState<AgentKey | null>(null);
+
+  const backedMeta = useMemo(
+    () =>
+      backedAgentId
+        ? AGENTS.find((a) => a.id === backedAgentId) ?? null
+        : null,
+    [backedAgentId],
+  );
 
   const fetchPolymarket = useCallback(async () => {
     try {
@@ -426,6 +442,56 @@ export default function PredictionsPage() {
             <p className="text-sm text-red-400/90">{error}</p>
           )}
 
+          {backedAgentId === null ? (
+            <section className="w-full">
+              <h2 className="mb-4 text-center text-lg font-bold tracking-tight text-white sm:text-xl">
+                Pick your agent to get started
+              </h2>
+              <div className="grid grid-cols-2 gap-3">
+                {AGENTS.map((agent) => (
+                  <button
+                    key={agent.id}
+                    type="button"
+                    onClick={() => setBackedAgentId(agent.id)}
+                    className="flex flex-col gap-2 rounded-xl border border-zinc-800/90 bg-[#111] p-3 text-left shadow-sm transition-all hover:border-zinc-700 sm:p-4"
+                  >
+                    <h3
+                      className="text-sm font-bold leading-tight sm:text-base"
+                      style={{ color: agent.color }}
+                    >
+                      {agent.name}
+                    </h3>
+                    <p className="text-[10px] leading-snug text-zinc-500 sm:text-[11px]">
+                      {AGENT_PREDICTION_STYLE[agent.id]}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </section>
+          ) : (
+            <>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <span
+                  className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold text-white sm:text-sm"
+                  style={{
+                    borderColor: `${backedMeta?.color ?? "#fff"}66`,
+                    backgroundColor: `${backedMeta?.color ?? "#333"}18`,
+                  }}
+                >
+                  Your agent:{" "}
+                  <span style={{ color: backedMeta?.color }}>
+                    {backedMeta?.name}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setBackedAgentId(null)}
+                  className="text-xs font-medium text-zinc-400 underline decoration-zinc-600 underline-offset-2 hover:text-zinc-200"
+                >
+                  Change
+                </button>
+              </div>
+
           {markets.map((m) => {
             const tally = crowd[m.id] ?? initialCrowdFromOdds(m.yesOdds);
             const pct = crowdPercents(tally);
@@ -533,7 +599,7 @@ export default function PredictionsPage() {
 
                 <div className="mt-8 border-t border-zinc-800/80 pt-6">
                   <p className="text-center text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                    Guide the agents
+                    Guide your agent — {backedMeta?.name}
                   </p>
                   <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <button
@@ -584,13 +650,17 @@ export default function PredictionsPage() {
 
                   <div className="mt-4">
                     <label htmlFor={`reason-${m.id}`} className="sr-only">
-                      Optional reasoning for agents
+                      Tell {backedMeta?.name} why
                     </label>
                     <textarea
                       id={`reason-${m.id}`}
                       rows={2}
                       maxLength={MAX_REASON}
-                      placeholder="Optional: tell the agent why (e.g. 'ETH has strong support at $1,900')"
+                      placeholder={
+                        backedMeta
+                          ? `Tell ${backedMeta.name} why...`
+                          : "Tell your agent why..."
+                      }
                       value={draft}
                       onChange={(e) =>
                         setReasonDraft((prev) => ({
@@ -631,7 +701,7 @@ export default function PredictionsPage() {
 
                 <div className="mt-8">
                   <p className="mb-2 text-center text-[10px] font-medium uppercase tracking-wide text-zinc-500">
-                    Crowd strategies
+                    Backers of {backedMeta?.name}
                   </p>
                   <div className="mb-1.5 grid grid-cols-4 gap-1 text-[9px] font-semibold tabular-nums sm:text-[10px]">
                     <span className="text-center text-emerald-400/90">
@@ -672,6 +742,8 @@ export default function PredictionsPage() {
 
           {!loading && markets.length === 0 && !error && (
             <p className="text-sm text-zinc-500">No markets available.</p>
+          )}
+            </>
           )}
         </main>
 
