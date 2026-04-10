@@ -12,6 +12,7 @@ import {
 } from "react";
 import { AuthButton, HeaderPointsPill } from "@/components/AuthButton";
 import { useAuth } from "@/components/auth-provider";
+import { supabase } from "@/lib/supabase";
 import {
   type AgentKey,
   type AgentApiState,
@@ -1211,39 +1212,213 @@ function FeedPanel({ data }: { data: CompetitionApiResponse }) {
   );
 }
 
+type PredictorRow = {
+  id: string;
+  username: string;
+  points: number;
+  predictions_correct: number | null;
+  predictions_total: number | null;
+};
+
+function tierForPoints(points: number): {
+  label: string;
+  className: string;
+} {
+  if (points >= 10_000)
+    return {
+      label: "Elite",
+      className:
+        "border-amber-500/40 bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/25",
+    };
+  if (points >= 5000)
+    return {
+      label: "Gold",
+      className:
+        "border-yellow-500/35 bg-yellow-500/10 text-yellow-200 ring-1 ring-yellow-500/20",
+    };
+  if (points >= 1000)
+    return {
+      label: "Silver",
+      className:
+        "border-zinc-400/35 bg-zinc-500/15 text-zinc-200 ring-1 ring-zinc-400/20",
+    };
+  return {
+    label: "Bronze",
+    className:
+      "border-orange-700/40 bg-orange-950/50 text-orange-200/90 ring-1 ring-orange-800/30",
+  };
+}
+
+function formatAccuracyPct(correct: number | null, total: number | null): string {
+  const t = total ?? 0;
+  const c = correct ?? 0;
+  if (t <= 0) return "—";
+  return `${Math.round((c / t) * 100)}%`;
+}
+
 function LeaderboardPanel({
   sortedAgents,
 }: {
   sortedAgents: { meta: (typeof AGENTS)[number]; api: AgentApiState }[];
 }) {
+  const { user, profile } = useAuth();
+  const [predictors, setPredictors] = useState<PredictorRow[]>([]);
+  const [predictorsError, setPredictorsError] = useState<string | null>(null);
+  const [predictorsLoading, setPredictorsLoading] = useState(true);
+
+  const fetchPredictors = useCallback(async () => {
+    setPredictorsError(null);
+    const { data, error } = await supabase
+      .from("profiles")
+      .select(
+        "id, username, points, predictions_correct, predictions_total",
+      )
+      .order("points", { ascending: false })
+      .limit(20);
+
+    if (error) {
+      setPredictorsError(error.message);
+      setPredictors([]);
+    } else {
+      const rows = (data ?? []).map((r) => {
+        const o = r as Record<string, unknown>;
+        return {
+          id: String(o.id ?? ""),
+          username: String(o.username ?? ""),
+          points: Number(o.points ?? 0),
+          predictions_correct:
+            o.predictions_correct == null
+              ? null
+              : Number(o.predictions_correct),
+          predictions_total:
+            o.predictions_total == null ? null : Number(o.predictions_total),
+        } satisfies PredictorRow;
+      });
+      setPredictors(rows);
+    }
+    setPredictorsLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void fetchPredictors();
+    const id = window.setInterval(() => void fetchPredictors(), 30_000);
+    return () => window.clearInterval(id);
+  }, [fetchPredictors]);
+
+  const loggedIn = Boolean(user);
+  const zeroPointsLoggedIn = loggedIn && (profile?.points ?? 0) === 0;
+
   return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-semibold text-zinc-200">Leaderboard</h3>
-      <ol className="space-y-2">
-        {sortedAgents.map(({ meta, api }, i) => (
-          <li
-            key={meta.id}
-            className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2"
-          >
-            <div className="flex items-center gap-2">
-              <span
-                className="text-xs font-bold text-zinc-500"
-                style={{ color: meta.color }}
+    <div className="space-y-8">
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-zinc-200">
+            Agent rankings
+          </h3>
+          <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
+            ChatGPT, Claude, Gemini, Grok ranked by live P&amp;L — book totals
+            include starting pool plus session P&amp;L.
+          </p>
+        </div>
+        <ol className="space-y-2">
+          {sortedAgents.map(({ meta, api }, i) => {
+            const bookTotal = totalBookGbp(meta.id, api.pnl);
+            return (
+              <li
+                key={meta.id}
+                className="flex items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2"
               >
-                #{i + 1}
-              </span>
-              <span className="text-sm font-medium text-zinc-200">
-                {meta.name}
-              </span>
-            </div>
-            <span
-              className={`text-sm font-semibold tabular-nums ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
-            >
-              {formatGbp(api.pnl)}
-            </span>
-          </li>
-        ))}
-      </ol>
+                <div className="flex min-w-0 items-center gap-2">
+                  <span
+                    className="shrink-0 text-xs font-bold tabular-nums text-zinc-500"
+                    style={{ color: meta.color }}
+                  >
+                    #{i + 1}
+                  </span>
+                  <span className="truncate text-sm font-medium text-zinc-200">
+                    {meta.name}
+                  </span>
+                </div>
+                <div className="shrink-0 text-right">
+                  <span
+                    className={`block text-sm font-semibold tabular-nums ${api.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                  >
+                    {formatGbp(bookTotal)}
+                  </span>
+                  <span className="text-[10px] tabular-nums text-zinc-500">
+                    P&amp;L {formatGbp(api.pnl)}
+                  </span>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+
+      <div className="space-y-3 border-t border-zinc-800/80 pt-6">
+        <h3 className="text-sm font-semibold text-zinc-200">Top predictors</h3>
+
+        {!loggedIn && (
+          <p className="rounded-lg border border-zinc-700/60 bg-zinc-900/30 px-3 py-2 text-xs text-zinc-400">
+            Login to see your ranking
+          </p>
+        )}
+        {loggedIn && zeroPointsLoggedIn && (
+          <p className="rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-2 text-xs text-violet-200/90">
+            You&apos;re not on the leaderboard yet — start voting to earn
+            points
+          </p>
+        )}
+
+        {predictorsLoading && predictors.length === 0 ? (
+          <p className="text-xs text-zinc-500">Loading predictors…</p>
+        ) : null}
+        {predictorsError && (
+          <p className="text-xs text-red-400/90">{predictorsError}</p>
+        )}
+
+        <ul className="space-y-2">
+          {predictors.map((row, i) => {
+            const tier = tierForPoints(row.points);
+            const isYou = Boolean(user?.id && row.id === user.id);
+            return (
+              <li
+                key={row.id}
+                className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2.5 ${
+                  isYou
+                    ? "border-violet-500/35 bg-violet-500/[0.12]"
+                    : "border-zinc-800 bg-zinc-900/40"
+                }`}
+              >
+                <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+                  <span className="w-6 shrink-0 text-xs font-bold tabular-nums text-zinc-500">
+                    #{i + 1}
+                  </span>
+                  <span className="min-w-0 truncate text-sm font-medium text-zinc-200">
+                    {row.username}
+                  </span>
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tier.className}`}
+                  >
+                    {tier.label}
+                  </span>
+                </div>
+                <div className="flex w-full shrink-0 items-center justify-between gap-3 pl-8 sm:ml-auto sm:w-auto sm:pl-0">
+                  <span className="text-xs tabular-nums text-zinc-400">
+                    {formatAccuracyPct(
+                      row.predictions_correct,
+                      row.predictions_total,
+                    )}
+                  </span>
+                  <span className="text-sm font-semibold tabular-nums text-zinc-100">
+                    {row.points.toLocaleString()} pts
+                  </span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </div>
   );
 }
